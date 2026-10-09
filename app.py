@@ -1,16 +1,12 @@
 """
-app.py — AP Grid Quantum Optimiser Dashboard
-Industrial-grade control-room UI connecting all backend modules.
-
+app.py - AP Grid Quantum Optimiser Dashboard
+IBM Quantum hardware-first. All outputs come from live IBM QPU runs.
 Run: streamlit run app.py
 """
 from __future__ import annotations
-
-import sys, io, json, time, subprocess, tempfile, os
-
+import sys, io, json, time, subprocess, os, re
 import streamlit as st
 
-# set_page_config MUST be the first Streamlit call
 st.set_page_config(
     page_title="AP Grid Quantum Optimiser",
     layout="wide",
@@ -24,7 +20,6 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     except Exception:
         pass
 
-# Show import errors on the page instead of a blank "Oh no" screen
 _import_error = None
 try:
     import numpy as np
@@ -33,10 +28,7 @@ try:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
-
-    from engine import run_all, greedy_merit_order, all_on
-    from network import NODES, LINES, LINE_CAP, GEN_NODE, GENS, demand_simulator, read_demand_csv, save_demand_template, NetworkLP
-    from grid import BLOCKS
+    from network import NODES, LINES, LINE_CAP, GEN_NODE, GENS, BLOCKS
 except Exception as _e:
     _import_error = _e
 
@@ -48,256 +40,78 @@ except Exception:
             return str(st.secrets.get("IBM_QUANTUM_TOKEN", "") or st.secrets.get("IBM_TOKEN", "") or "").strip()
         except Exception:
             return os.environ.get("IBM_QUANTUM_TOKEN", "") or os.environ.get("IBM_TOKEN", "") or ""
-
     def env_with_ibm_token(base_env=None):
         env = dict(base_env or os.environ)
         tok = get_ibm_token()
         if tok:
             env["IBM_QUANTUM_TOKEN"] = tok
             env["IBM_TOKEN"] = tok
+            env["QISKIT_IBM_TOKEN"] = tok
         return env
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR     = os.path.dirname(os.path.abspath(__file__))
 IBM_RESULTS = os.path.join(APP_DIR, "ibm_results.json")
 IBM_STATE   = os.path.join(APP_DIR, "ibm_job_state.json")
-IBM_ENC     = os.path.join(APP_DIR, "ibm_results.enc.json")
-PQC_KEYS    = os.path.join(APP_DIR, "pqc_keys.bin")
 
 if _import_error is not None:
     st.error("**App failed to start — dependency / import error**")
     st.exception(_import_error)
-    st.info(
-        "Most common causes on Streamlit Cloud:\n"
-        "1. `requirements.txt` missing a package — reboot after fixing\n"
-        "2. Repo missing `engine.py`, `qaoa.py`, `grid.py`, `network.py`, or `data/`\n"
-        "3. Incompatible Qiskit version — pin versions in requirements.txt"
-    )
-    st.code(
-        "Required files next to app.py:\n"
-        "  engine.py  qaoa.py  grid.py  network.py  ibm_run.py  ibm_auth.py\n"
-        "  data/apsldc_january_2026.csv  data/apsldc_april_2025.csv",
-        language="text",
-    )
     st.stop()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GLOBAL CSS — Industrial Minimalist Dark Theme
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── CSS ──────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Base ── */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
-    background-color: #0a0c10;
-    color: #e2e8f0;
-}
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {
-    background: #0d1117;
-    border-right: 1px solid #1e2a38;
-}
-[data-testid="stSidebar"] * { color: #c9d1d9 !important; }
-
-/* ── Top Banner ── */
-.top-banner {
-    background: linear-gradient(135deg, #0d1117 0%, #161b22 60%, #0d1b2a 100%);
-    border: 1px solid #1e2a38;
-    border-radius: 12px;
-    padding: 22px 30px 18px 30px;
-    margin-bottom: 18px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-.banner-title {
-    font-size: 1.55rem;
-    font-weight: 700;
-    color: #f0f6fc;
-    letter-spacing: -0.3px;
-}
-.banner-sub {
-    font-size: 0.78rem;
-    color: #8b949e;
-    margin-top: 4px;
-    font-weight: 400;
-}
-.badge {
-    display: inline-block;
-    background: #1c2a3a;
-    border: 1px solid #21364d;
-    border-radius: 6px;
-    padding: 3px 10px;
-    font-size: 0.7rem;
-    font-weight: 500;
-    color: #58a6ff;
-    margin-right: 6px;
-    letter-spacing: 0.4px;
-}
-.badge-green { color: #3fb950; border-color: #1a3624; background: #0f2419; }
-.badge-amber { color: #d29922; border-color: #3a2b12; background: #1c1808; }
-.badge-red   { color: #f85149; border-color: #3b1b1b; background: #1c0e0e; }
-
-/* ── KPI Cards ── */
-.kpi-row { display: flex; gap: 14px; margin-bottom: 18px; }
-.kpi-card {
-    flex: 1;
-    background: #0d1117;
-    border: 1px solid #1e2a38;
-    border-radius: 10px;
-    padding: 16px 20px;
-}
-.kpi-label {
-    font-size: 0.72rem;
-    color: #8b949e;
-    font-weight: 500;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-}
-.kpi-value {
-    font-size: 1.65rem;
-    font-weight: 700;
-    color: #f0f6fc;
-    font-family: 'JetBrains Mono', monospace;
-    line-height: 1.1;
-}
-.kpi-delta {
-    font-size: 0.72rem;
-    margin-top: 5px;
-    font-weight: 500;
-}
-.kpi-pos { color: #3fb950; }
-.kpi-neg { color: #f85149; }
-.kpi-neu { color: #8b949e; }
-
-/* ── Section Headers ── */
-.section-header {
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: #8b949e;
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
-    border-bottom: 1px solid #1e2a38;
-    padding-bottom: 7px;
-    margin: 18px 0 14px 0;
-}
-
-/* ── Status Pill ── */
-.pill {
-    display: inline-block;
-    border-radius: 20px;
-    padding: 3px 10px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-}
-.pill-on  { background: #1a3624; color: #3fb950; border: 1px solid #196c2e; }
-.pill-off { background: #161b22; color: #484f58; border: 1px solid #30363d; }
-.pill-ok  { background: #1c2a3a; color: #58a6ff; border: 1px solid #1f3a57; }
-.pill-warn{ background: #3a2b12; color: #d29922; border: 1px solid #5c4215; }
-.pill-crit{ background: #1c0e0e; color: #f85149; border: 1px solid #5c1212; }
-
-/* ── Data Table ── */
-.grid-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.82rem;
-    margin-top: 6px;
-}
-.grid-table th {
-    background: #161b22;
-    color: #8b949e;
-    font-weight: 600;
-    font-size: 0.68rem;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-    padding: 9px 14px;
-    text-align: left;
-    border-bottom: 1px solid #1e2a38;
-}
-.grid-table td {
-    padding: 9px 14px;
-    border-bottom: 1px solid #161b22;
-    color: #c9d1d9;
-    font-family: 'JetBrains Mono', monospace;
-}
-.grid-table tr:hover td { background: #111820; }
-
-/* ── Tab bar ── */
-[data-testid="stTabs"] [role="tablist"] {
-    background: #0d1117;
-    border-bottom: 1px solid #1e2a38;
-    border-radius: 0;
-    gap: 0;
-}
-[data-testid="stTabs"] [role="tab"] {
-    color: #8b949e !important;
-    font-size: 0.8rem !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.3px;
-    padding: 10px 18px !important;
-    border-radius: 0 !important;
-    border-bottom: 2px solid transparent !important;
-}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-    color: #f0f6fc !important;
-    border-bottom: 2px solid #58a6ff !important;
-    background: transparent !important;
-}
-
-/* ── Buttons ── */
-.stButton > button {
-    background: #1c2a3a !important;
-    color: #58a6ff !important;
-    border: 1px solid #1f3a57 !important;
-    border-radius: 7px !important;
-    font-size: 0.82rem !important;
-    font-weight: 500 !important;
-    padding: 8px 18px !important;
-    transition: all 0.15s ease !important;
-}
-.stButton > button:hover {
-    background: #21364d !important;
-    border-color: #388bfd !important;
-}
-.stButton > button[kind="primary"] {
-    background: #1c4a8a !important;
-    border-color: #388bfd !important;
-    color: #cae8ff !important;
-}
-.stButton > button[kind="primary"]:hover {
-    background: #236dc5 !important;
-}
-
-/* ── Misc ── */
-[data-testid="stMetric"] { display: none; }
-.stDataFrame, .stTable { border: 1px solid #1e2a38 !important; border-radius: 8px !important; }
-code, pre { font-family: 'JetBrains Mono', monospace !important; background: #161b22 !important; color: #e6edf3 !important; }
-.stInfo { background: #1c2a3a !important; border-left: 3px solid #388bfd !important; color: #c9d1d9 !important; border-radius: 6px !important; }
-.stSuccess { background: #1a3624 !important; border-left: 3px solid #3fb950 !important; color: #c9d1d9 !important; border-radius: 6px !important; }
-.stWarning { background: #3a2b12 !important; border-left: 3px solid #d29922 !important; color: #c9d1d9 !important; border-radius: 6px !important; }
-.stError { background: #1c0e0e !important; border-left: 3px solid #f85149 !important; color: #c9d1d9 !important; border-radius: 6px !important; }
-hr { border-color: #1e2a38 !important; }
+html,body,[class*="css"]{font-family:'Inter',sans-serif;background-color:#0a0c10;color:#e2e8f0;}
+[data-testid="stSidebar"]{background:#0d1117;border-right:1px solid #1e2a38;}
+[data-testid="stSidebar"] *{color:#c9d1d9 !important;}
+.top-banner{background:linear-gradient(135deg,#0d1117 0%,#161b22 60%,#0d1b2a 100%);border:1px solid #1e2a38;border-radius:12px;padding:22px 30px 18px 30px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;}
+.banner-title{font-size:1.55rem;font-weight:700;color:#f0f6fc;letter-spacing:-0.3px;}
+.banner-sub{font-size:0.78rem;color:#8b949e;margin-top:4px;font-weight:400;}
+.badge{display:inline-block;background:#1c2a3a;border:1px solid #21364d;border-radius:6px;padding:3px 10px;font-size:0.7rem;font-weight:500;color:#58a6ff;margin-right:6px;letter-spacing:0.4px;}
+.badge-green{color:#3fb950;border-color:#1a3624;background:#0f2419;}
+.badge-amber{color:#d29922;border-color:#3a2b12;background:#1c1808;}
+.badge-red{color:#f85149;border-color:#3b1b1b;background:#1c0e0e;}
+.kpi-row{display:flex;gap:14px;margin-bottom:18px;flex-wrap:wrap;}
+.kpi-card{flex:1;min-width:140px;background:#0d1117;border:1px solid #1e2a38;border-radius:10px;padding:16px 20px;}
+.kpi-label{font-size:0.72rem;color:#8b949e;font-weight:500;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:6px;}
+.kpi-value{font-size:1.55rem;font-weight:700;color:#f0f6fc;font-family:'JetBrains Mono',monospace;line-height:1.1;}
+.kpi-delta{font-size:0.72rem;margin-top:5px;font-weight:500;}
+.kpi-pos{color:#3fb950;}.kpi-neg{color:#f85149;}.kpi-neu{color:#8b949e;}
+.section-header{font-size:0.72rem;font-weight:600;color:#8b949e;letter-spacing:1.2px;text-transform:uppercase;border-bottom:1px solid #1e2a38;padding-bottom:7px;margin:18px 0 14px 0;}
+.pill{display:inline-block;border-radius:20px;padding:3px 10px;font-size:0.7rem;font-weight:600;letter-spacing:0.3px;}
+.pill-on{background:#1a3624;color:#3fb950;border:1px solid #196c2e;}
+.pill-off{background:#161b22;color:#484f58;border:1px solid #30363d;}
+.pill-warn{background:#3a2b12;color:#d29922;border:1px solid #5c4215;}
+.pill-crit{background:#1c0e0e;color:#f85149;border:1px solid #5c1212;}
+.grid-table{width:100%;border-collapse:collapse;font-size:0.82rem;margin-top:6px;}
+.grid-table th{background:#161b22;color:#8b949e;font-weight:600;font-size:0.68rem;letter-spacing:0.8px;text-transform:uppercase;padding:9px 14px;text-align:left;border-bottom:1px solid #1e2a38;}
+.grid-table td{padding:9px 14px;border-bottom:1px solid #161b22;color:#c9d1d9;font-family:'JetBrains Mono',monospace;}
+.grid-table tr:hover td{background:#111820;}
+[data-testid="stTabs"] [role="tablist"]{background:#0d1117;border-bottom:1px solid #1e2a38;}
+[data-testid="stTabs"] [role="tab"]{color:#8b949e !important;font-size:0.8rem !important;font-weight:500 !important;padding:10px 18px !important;border-radius:0 !important;border-bottom:2px solid transparent !important;}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"]{color:#f0f6fc !important;border-bottom:2px solid #58a6ff !important;background:transparent !important;}
+.stButton>button{background:#1c2a3a !important;color:#58a6ff !important;border:1px solid #1f3a57 !important;border-radius:7px !important;font-size:0.82rem !important;font-weight:500 !important;padding:8px 18px !important;transition:all 0.15s ease !important;}
+.stButton>button:hover{background:#21364d !important;border-color:#388bfd !important;}
+.stButton>button[kind="primary"]{background:#1c4a8a !important;border-color:#388bfd !important;color:#cae8ff !important;}
+[data-testid="stMetric"]{display:none;}
+.stDataFrame,.stTable{border:1px solid #1e2a38 !important;border-radius:8px !important;}
+code,pre{font-family:'JetBrains Mono',monospace !important;background:#161b22 !important;color:#e6edf3 !important;}
+.stInfo{background:#1c2a3a !important;border-left:3px solid #388bfd !important;color:#c9d1d9 !important;border-radius:6px !important;}
+.stSuccess{background:#1a3624 !important;border-left:3px solid #3fb950 !important;color:#c9d1d9 !important;border-radius:6px !important;}
+.stWarning{background:#3a2b12 !important;border-left:3px solid #d29922 !important;color:#c9d1d9 !important;border-radius:6px !important;}
+.stError{background:#1c0e0e !important;border-left:3px solid #f85149 !important;color:#c9d1d9 !important;border-radius:6px !important;}
+hr{border-color:#1e2a38 !important;}
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SESSION STATE
-# ─────────────────────────────────────────────────────────────────────────────
-for key, val in [("theta", None), ("result", None), ("sim_running", False),
-                 ("sim_tick", 0), ("sim_results", []),
-                 ("ibm_file_mtime", 0.0), ("ibm_data", None),
-                 ("ibm_live", False), ("result_live", False),
-                 ("result_meta", None)]:
-    if key not in st.session_state:
-        st.session_state[key] = val
+# ─── Session state ─────────────────────────────────────────────────────────
+for k, v in {"ibm_data": None, "ibm_live": False, "ibm_file_mtime": 0.0, "fetch_jid": ""}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# Check if ibm_results.json was updated externally (from PowerShell)
+
 def _ibm_results_changed() -> bool:
-    """Return True if ibm_results.json was modified since last check."""
     try:
         mtime = os.path.getmtime(IBM_RESULTS)
         if mtime != st.session_state.ibm_file_mtime:
@@ -307,1028 +121,499 @@ def _ibm_results_changed() -> bool:
         pass
     return False
 
-_ibm_new_results = _ibm_results_changed()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TOP BANNER
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
+_ibm_new = _ibm_results_changed()
+
+# ─── Helpers ───────────────────────────────────────────────────────────────
+BG="#0d1117"; FG="#c9d1d9"; GRID_COL="#1e2a38"
+BLUE="#388bfd"; GREEN="#3fb950"; AMBER="#d29922"; RED="#f85149"; PURPLE="#bc8cff"
+
+NODE_POS = {
+    "VSKP":(0.08,0.65),"VZM":(0.30,0.88),
+    "VJA":(0.55,0.62),"KNL":(0.55,0.22),"TPT":(0.88,0.40),
+}
+
+
+def dark_fig(w=8, h=3.5):
+    fig,ax = plt.subplots(figsize=(w,h))
+    fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
+    ax.tick_params(colors=FG,labelsize=8)
+    for sp in ax.spines.values(): sp.set_edgecolor(GRID_COL)
+    ax.grid(axis="y",color=GRID_COL,lw=0.5,linestyle="--")
+    return fig,ax
+
+
+def kpi(label, value, delta="", dcls="kpi-neu"):
+    d = f'<div class="kpi-delta {dcls}">{delta}</div>' if delta else ""
+    return (f'<div class="kpi-card"><div class="kpi-label">{label}</div>'
+            f'<div class="kpi-value">{value}</div>{d}</div>')
+
+
+def _load():
+    try:
+        with open(IBM_RESULTS) as f: return json.load(f)
+    except Exception: return None
+
+
+def _djid():
+    if os.path.exists(IBM_STATE):
+        try:
+            with open(IBM_STATE) as f: return json.load(f).get("job_id","") or ""
+        except Exception: pass
+    return ""
+
+
+# ─── Banner ────────────────────────────────────────────────────────────────
+_tok = get_ibm_token()
+_tok_badge = (f'<span class="badge badge-green">Token OK ({len(_tok)} chars)</span>'
+              if _tok else '<span class="badge badge-red">No IBM Token</span>')
+_live_badge = ('<span class="badge badge-green">LIVE IBM HARDWARE</span>'
+               if st.session_state.ibm_live else '<span class="badge badge-amber">Awaiting Run</span>')
+
+st.markdown(f"""
 <div class="top-banner">
   <div>
-    <div class="banner-title">⚡ AP Grid Quantum Optimiser</div>
+    <div class="banner-title">&#9889; AP Grid Quantum Optimiser</div>
     <div class="banner-sub">Hybrid QAOA · Unit Commitment · Post-Quantum Cryptography · IBM Quantum</div>
   </div>
   <div>
-    <span class="badge">Qiskit 2.5</span>
+    <span class="badge">Qiskit 2.x</span>
     <span class="badge badge-green">NIST ML-KEM-768</span>
-    <span class="badge badge-amber">ibm_fez · 156Q</span>
-    <span class="badge">Fall Fest 2026 — Use Case 04</span>
+    <span class="badge badge-amber">ibm_fez 156Q</span>
+    {_tok_badge} {_live_badge}
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER: Matplotlib dark style
-# ─────────────────────────────────────────────────────────────────────────────
-BG = "#0d1117"; FG = "#c9d1d9"; GRID_COL = "#1e2a38"
-BLUE = "#388bfd"; GREEN = "#3fb950"; AMBER = "#d29922"; RED = "#f85149"
-PURPLE = "#bc8cff"; CYAN = "#39d353"
+# ─── Token gate ────────────────────────────────────────────────────────────
+if not _tok:
+    st.error(
+        "## IBM Quantum Token Required\n\n"
+        "This app runs **only on real IBM Quantum hardware**.\n\n"
+        "### Setup:\n"
+        "1. Get token from [quantum.cloud.ibm.com](https://quantum.cloud.ibm.com/) -> Account -> API token\n"
+        "2. **Streamlit Cloud**: Manage app -> Settings -> Secrets -> add:\n"
+        "   ```toml\n   IBM_QUANTUM_TOKEN = \"your-token\"\n   ```\n"
+        "3. **Local**: Create `.streamlit/secrets.toml` with same line, then restart."
+    )
+    st.stop()
 
-def dark_fig(w=8, h=3.5):
-    fig, ax = plt.subplots(figsize=(w, h))
-    fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
-    ax.tick_params(colors=FG, labelsize=8)
-    for sp in ax.spines.values(): sp.set_edgecolor(GRID_COL)
-    ax.grid(axis="y", color=GRID_COL, lw=0.5, linestyle="--")
-    return fig, ax
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER: Network map
-# ─────────────────────────────────────────────────────────────────────────────
-NODE_POS = {
-    "VSKP": (0.08, 0.65), "VZM": (0.30, 0.88),
-    "VJA":  (0.55, 0.62), "KNL": (0.55, 0.22), "TPT": (0.88, 0.40),
-}
-
-def draw_network(result: dict) -> plt.Figure:
-    lp_res = result["lp_qaoa"]
-    n_lines = len(LINES)
-    max_loading = np.zeros(n_lines)
-    for bl in lp_res["blocks"]:
-        if "line_loading_pct" in bl:
-            max_loading = np.maximum(max_loading, bl["line_loading_pct"])
-
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
-    ax.set_xlim(-0.05, 1.05); ax.set_ylim(-0.05, 1.05); ax.axis("off")
-
-    for l, (frm, to, cap) in enumerate(LINES):
-        x0, y0 = NODE_POS[frm]; x1, y1 = NODE_POS[to]
-        load = max_loading[l]
-        color = GREEN if load < 60 else (AMBER if load < 85 else RED)
-        lw = 2 + load / 30
-        ax.plot([x0, x1], [y0, y1], color=color, lw=lw, alpha=0.85, zorder=1)
-        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
-        ax.text(mx, my + 0.03, f"{load:.0f}%", color=color,
-                fontsize=8, ha="center", fontweight="600", zorder=4)
-
-    gen_at = {}
-    for i in range(len(GENS)):
-        gen_at.setdefault(GEN_NODE[i], []).append(GENS[i]["name"])
-
-    for node, (nx, ny) in NODE_POS.items():
-        ax.add_patch(plt.Circle((nx, ny), 0.055, color="#1c2a3a", zorder=2,
-                                edgecolor=BLUE, linewidth=1.5))
-        ax.text(nx, ny, node, color="#f0f6fc", fontsize=9,
-                ha="center", va="center", fontweight="bold", zorder=5)
-        sub = "  ".join(gen_at.get(node, []))
-        if sub:
-            ax.text(nx, ny - 0.11, sub, color="#58a6ff",
-                    fontsize=6.5, ha="center", va="top", zorder=3)
-
-    legend_items = [
-        mpatches.Patch(color=GREEN, label="< 60% loaded"),
-        mpatches.Patch(color=AMBER, label="60–85%"),
-        mpatches.Patch(color=RED,   label="> 85% congested"),
-    ]
-    ax.legend(handles=legend_items, loc="lower right", fontsize=7.5,
-              facecolor="#161b22", edgecolor=GRID_COL, labelcolor=FG)
-    fig.tight_layout(pad=0.3)
-    return fig
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER: Render KPI card HTML
-# ─────────────────────────────────────────────────────────────────────────────
-def kpi_html(label, value, delta="", delta_class="kpi-neu"):
-    d = f'<div class="kpi-delta {delta_class}">{delta}</div>' if delta else ""
-    return f"""
-    <div class="kpi-card">
-      <div class="kpi-label">{label}</div>
-      <div class="kpi-value">{value}</div>
-      {d}
-    </div>"""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── Sidebar ───────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="section-header">Scenario Controls</div>', unsafe_allow_html=True)
     d_pct = st.slider("Demand change (%)", -20, 30, 0, 5)
-    s_pct = st.slider("Solar output (% of forecast)", 0, 150, 100, 10)
-    w_pct = st.slider("Wind output (% of forecast)", 0, 200, 100, 10)
+    s_pct = st.slider("Solar output (% forecast)", 0, 150, 100, 10)
+    w_pct = st.slider("Wind output (% forecast)", 0, 200, 100, 10)
 
-    st.markdown('<div class="section-header">Presets</div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    heat  = c1.button("🌡 Heat",  key="p_heat")
-    cloud = c2.button("☁ Cloud", key="p_cloud")
-    calm  = c3.button("🍃 Calm",  key="p_calm")
-    if heat:  d_pct = 15
-    if cloud: s_pct = 50
-    if calm:  w_pct = 40
+    st.markdown('<div class="section-header">Quick Presets</div>', unsafe_allow_html=True)
+    c1,c2,c3 = st.columns(3)
+    if c1.button("Heat",  key="p_heat"):  d_pct,s_pct,w_pct = 15,100,100
+    if c2.button("Cloud", key="p_cloud"): d_pct,s_pct,w_pct = 0,50,100
+    if c3.button("Calm",  key="p_calm"):  d_pct,s_pct,w_pct = 0,100,40
 
-    st.markdown('<div class="section-header">Data Source</div>', unsafe_allow_html=True)
-    data_choice = st.selectbox("Load Profile", [
-        "Synthetic Simulator",
-        "APSLDC Jan 2026 (Winter)",
-        "APSLDC Apr 2025 (Summer Peak)",
-        "Upload CSV",
-    ], index=0, label_visibility="collapsed")
-    csv_file = None
-    if data_choice == "Upload CSV":
-        csv_file = st.file_uploader("CSV (block, node, demand_mw)", type="csv")
+    st.markdown('<div class="section-header">IBM Backend</div>', unsafe_allow_html=True)
+    ibm_bk   = st.selectbox("QPU backend",
+                             ["least-busy","ibm_fez","ibm_marrakesh","ibm_kingston",
+                              "ibm_brisbane","ibm_sherbrooke","ibm_torino"], index=0)
+    ibm_sh   = st.select_slider("Shots",[1024,2048,4096,8192],value=4096)
+    ibm_opt  = st.selectbox("Optimizer",["COBYLA","SPSA","PARAM_SHIFT"])
+    ibm_reps = st.slider("QAOA layers (p)",1,4,2)
+    ibm_mi   = st.slider("Max iterations",20,150,40,10)
 
-    st.markdown('<div class="section-header">Backend</div>', unsafe_allow_html=True)
-    run_on_ibm = st.checkbox(
-        "Run on IBM Quantum hardware",
-        value=False,
-        help="Trains QAOA locally, then samples on a real IBM QPU. "
-             "Job appears on the IBM Quantum platform; results load back into this dashboard.",
-    )
-    ibm_backend_choice = "least-busy"
-    if run_on_ibm:
-        st.caption("⚡ Real QPU — queue + run may take several minutes. Uncheck for fast local Aer.")
-        ibm_backend_choice = st.selectbox(
-            "IBM backend",
-            [
-                "least-busy",
-                "ibm_fez",
-                "ibm_marrakesh",
-                "ibm_kingston",
-                "ibm_brisbane",
-                "ibm_sherbrooke",
-                "ibm_torino",
-            ],
-            index=0,
-            help="Pick a specific QPU (fez / marrakesh / kingston …) or least-busy to auto-select.",
-        )
-
-    st.markdown('<div class="section-header">Run</div>', unsafe_allow_html=True)
-    run_btn = st.button("▶  Optimise Now", type="primary", width='stretch')
-
+    st.markdown('<div class="section-header">Submit</div>', unsafe_allow_html=True)
+    run_btn = st.button("Run on IBM Quantum", type="primary", use_container_width=True)
     st.divider()
     st.caption("AP Grid Optimiser · Qiskit Fall Fest 2026")
-    st.caption("Qiskit 2.5 · IBM Quantum · NIST PQC")
+    st.caption("Qiskit · IBM Quantum · NIST PQC")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DATA LOAD & RUN BACKEND
-# Only run when the user clicks the button (not on every page load).
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── Submit handler ────────────────────────────────────────────────────────
 if run_btn:
-    d_scale = 1 + d_pct / 100
-    s_scale = s_pct / 100
-    w_scale = w_pct / 100
+    d_scale = 1 + d_pct/100
+    s_scale = s_pct/100
+    w_scale = w_pct/100
+    cmd = [sys.executable, os.path.join(APP_DIR,"ibm_run.py"), "submit",
+           "--shots",str(ibm_sh),"--optimizer",ibm_opt,
+           "--reps",str(ibm_reps),"--maxiter",str(ibm_mi),
+           "--restarts","1",
+           "--demand-scale",str(d_scale),"--solar-scale",str(s_scale),"--wind-scale",str(w_scale)]
+    if ibm_bk and ibm_bk != "least-busy":
+        cmd += ["--backend",ibm_bk]
 
-    if run_on_ibm:
-        # ── Real IBM Quantum path ──────────────────────────────────────────
-        # Same flow as PowerShell: train → transpile → submit → wait → save ibm_results.json
-        with st.spinner(
-            "IBM Quantum: training MA-QAOA → transpiling → submitting to QPU → waiting for results… "
-            "(can take several minutes depending on queue)"
-        ):
-            cmd = [
-                sys.executable, os.path.join(APP_DIR, "ibm_run.py"), "submit",
-                "--shots", "4096",
-                "--optimizer", "COBYLA",
-                "--reps", "2",
-                "--restarts", "1",
-                "--maxiter", "40",
-                "--demand-scale", str(d_scale),
-                "--solar-scale", str(s_scale),
-                "--wind-scale", str(w_scale),
-            ]
-            if ibm_backend_choice and ibm_backend_choice != "least-busy":
-                cmd += ["--backend", ibm_backend_choice]
-            # Pass token into child process (st.secrets is not visible to subprocess)
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=APP_DIR,
-                env=env_with_ibm_token(),
-            )
-        out_text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-        st.code(out_text or "(no output)", language="text")
+    with st.spinner("IBM Quantum: training MA-QAOA -> transpiling -> submitting to QPU -> waiting... (1-10 min)"):
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=APP_DIR, env=env_with_ibm_token())
 
-        # Recover job_id from log / state (job may finish on IBM even if Cloud kills the wait)
-        import re as _re
-        _jid = ""
-        m = _re.search(r"Job ID\s*:\s*([A-Za-z0-9_-]+)", out_text or "")
-        if m:
-            _jid = m.group(1)
-        if not _jid and os.path.exists(IBM_STATE):
-            try:
-                with open(IBM_STATE) as _sf:
-                    _jid = json.load(_sf).get("job_id", "") or ""
-            except Exception:
-                pass
-        if _jid:
-            st.session_state["fetch_jid"] = _jid
-            st.info(f"IBM Job ID: `{_jid}` — [open on platform](https://quantum.cloud.ibm.com/jobs/{_jid})")
+    out_txt = (proc.stdout or "") + (("\n"+proc.stderr) if proc.stderr else "")
+    with st.expander("IBM run log", expanded=(proc.returncode != 0)):
+        st.code(out_txt or "(no output)", language="text")
 
-        # Auto-fetch when results file is missing but job id is known
-        if not os.path.exists(IBM_RESULTS) and _jid and "local" not in str(_jid).lower():
-            st.warning(
-                "Results not saved yet (common when Streamlit Cloud times out while waiting). "
-                f"Fetching completed job `{_jid}` from IBM…"
-            )
-            with st.spinner(f"Fetching {_jid} …"):
-                fproc = subprocess.run(
-                    [sys.executable, os.path.join(APP_DIR, "ibm_run.py"), "fetch", _jid],
-                    capture_output=True, text=True, cwd=APP_DIR,
-                    env=env_with_ibm_token(),
-                )
-            st.code((fproc.stdout or "") + ("\n" + (fproc.stderr or "")), language="text")
-
-        if os.path.exists(IBM_RESULTS):
-            st.success("✅ IBM Quantum results loaded into the dashboard.")
-            try:
-                with open(IBM_RESULTS) as f:
-                    st.session_state.ibm_data = json.load(f)
-                st.session_state.ibm_live = True
-            except Exception:
-                st.session_state.ibm_data = None
-                st.session_state.ibm_live = False
-            try:
-                with st.spinner("Building local LP/MILP benchmarks for the same scenario…"):
-                    r = run_all(
-                        demand_scale=d_scale, solar_scale=s_scale, wind_scale=w_scale,
-                        warm_theta=st.session_state.theta,
-                        restarts=1, maxiter=40, shots=2048,
-                    )
-                st.session_state.theta  = r["theta"]
-                st.session_state.result = r
-                st.session_state.result_live = True
-                st.session_state.result_meta = {
-                    "demand_scale": round(d_scale, 3),
-                    "solar_scale": round(s_scale, 3),
-                    "wind_scale": round(w_scale, 3),
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "source": "ibm",
-                }
-            except Exception as e:
-                st.warning("IBM results saved, but local benchmark step failed:")
-                st.exception(e)
-            st.rerun()
-        elif _jid:
-            st.warning(
-                f"Job `{_jid}` is on IBM but results are not in the app yet. "
-                "Open the **IBM Quantum** tab → Job ID is pre-filled → click **⬇ Fetch from IBM**."
-            )
-        elif proc.returncode != 0:
-            st.error(
-                f"IBM submit failed (exit {proc.returncode}). "
-                "Check the log above / IBM_QUANTUM_TOKEN in Streamlit Secrets."
-            )
-        else:
-            st.warning("IBM run finished but no results file and no Job ID found. See log above.")
-    else:
-        # ── Fast local Aer / classical path ────────────────────────────────
-        target_csv = None
-        if data_choice == "APSLDC Jan 2026 (Winter)":
-            target_csv = os.path.join(APP_DIR, "data", "apsldc_january_2026.csv")
-        elif data_choice == "APSLDC Apr 2025 (Summer Peak)":
-            target_csv = os.path.join(APP_DIR, "data", "apsldc_april_2025.csv")
-        elif data_choice == "Upload CSV" and csv_file is not None:
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as tf:
-                tf.write(csv_file.getbuffer())
-                target_csv = tf.name
-
-        # If CSV path is missing on the server, fall back to synthetic demand
-        if target_csv and not os.path.isfile(target_csv):
-            st.warning(f"Data file not found: `{target_csv}`. Using synthetic simulator instead.")
-            target_csv = None
-
+    _jid = ""
+    m = re.search(r"Job ID\s*:\s*([A-Za-z0-9_-]+)", out_txt or "")
+    if m: _jid = m.group(1)
+    if not _jid and os.path.exists(IBM_STATE):
         try:
-            with st.spinner("Building QUBO → Training MA-QAOA → LP dispatch + MILP benchmark … "
-                            "(typically 15–40 seconds on first run)"):
-                r = run_all(
-                    demand_scale=d_scale,
-                    solar_scale=s_scale,
-                    wind_scale=w_scale,
-                    warm_theta=st.session_state.theta,
-                    csv_path=target_csv,
-                    restarts=1,
-                    maxiter=40,
-                    shots=2048,
-                )
-            st.session_state.theta  = r["theta"]
-            st.session_state.result = r
-            st.session_state.result_live = True
-            st.session_state.ibm_live = False
-            st.session_state.result_meta = {
-                "demand_scale": round(d_scale, 3),
-                "solar_scale": round(s_scale, 3),
-                "wind_scale": round(w_scale, 3),
-                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "source": "local",
-            }
-        except Exception as e:
-            st.error("Optimisation failed. Full error below — copy this and share if you need help.")
-            st.exception(e)
+            with open(IBM_STATE) as f: _jid = json.load(f).get("job_id","") or ""
+        except Exception: pass
 
-r  = st.session_state.result
-lp = r["lp_qaoa"] if r is not None else None
+    if _jid:
+        st.session_state["fetch_jid"] = _jid
+        st.info(f"IBM Job ID: `{_jid}` — [view on platform](https://quantum.cloud.ibm.com/jobs/{_jid})")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TABS
-# ─────────────────────────────────────────────────────────────────────────────
-tab_opt, tab_net, tab_ibm, tab_pqc, tab_rigor, tab_sim = st.tabs([
-    "Optimise", "Network Map", "IBM Quantum", "PQC Security", "Quantum Rigor", "Live Sim",
-])
+    if not os.path.exists(IBM_RESULTS) and _jid and "local" not in str(_jid).lower():
+        st.warning(f"Results file missing (possible timeout). Fetching job `{_jid}` from IBM...")
+        with st.spinner(f"Fetching {_jid} ..."):
+            fp = subprocess.run([sys.executable, os.path.join(APP_DIR,"ibm_run.py"),"fetch",_jid],
+                                capture_output=True,text=True,cwd=APP_DIR,env=env_with_ibm_token())
+        with st.expander("Fetch log"):
+            st.code((fp.stdout or "")+("\n"+(fp.stderr or "")),language="text")
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 1 — OPTIMISE
-# ════════════════════════════════════════════════════════════════════════════
-with tab_opt:
-  # IBM banner: LIVE only after this session's submit/fetch — never pretends cached file is live
-  _ibm = st.session_state.get("ibm_data")
-  if st.session_state.get("ibm_live") and _ibm:
-      _hw = _ibm.get("hardware", {})
-      _url = _ibm.get("ibm_platform_url", "")
-      st.markdown(f"""
-      <div style="background:#0f2419;border:1px solid #196c2e;border-radius:10px;padding:12px 18px;margin-bottom:14px;">
-        <span class="badge badge-green">LIVE IBM HARDWARE</span>
-        <span style="color:#c9d1d9;font-size:0.85rem;margin-left:8px;">
-          Backend <b>{_ibm.get('backend','—')}</b> · Job <code>{_ibm.get('job_id','—')}</code> ·
-          Cost ₹{_hw.get('cost_lakh',0):.1f}L · P(top1%) {_hw.get('prob_in_top1pct',0):.0%}
-        </span>
-        {"<a href='" + _url + "' target='_blank' style='color:#58a6ff;margin-left:10px;'>Open on IBM Platform ↗</a>" if _url else ""}
-      </div>
-      """, unsafe_allow_html=True)
-  elif os.path.exists(IBM_RESULTS):
-      st.caption(
-          "📦 A sample/cached `ibm_results.json` exists in the repo from an earlier job. "
-          "It is **not** live. Check **Run on IBM Quantum hardware** + Optimise, or **Fetch** a Job ID on the IBM tab."
-      )
-
-  if r is None:
-    st.info("👈 Set demand / solar / wind in the sidebar, then click **▶ Optimise Now**.\n\n"
-            "• **Local (default):** trains MA-QAOA + LP/MILP **now** with your slider values (not static images).\n\n"
-            "• **IBM Quantum:** check *Run on IBM Quantum hardware*, pick backend (fez/marrakesh/kingston), "
-            "then Optimise — submits a real circuit; use **Fetch** if Cloud times out while waiting.")
-  else:
-    # Live-run stamp so it's obvious this is not a static screenshot
-    _meta = st.session_state.get("result_meta") or {}
-    _src = "LIVE IBM + local benchmarks" if st.session_state.get("ibm_live") else "LIVE local Aer / classical"
-    st.success(
-        f"**{_src}** · demand×{_meta.get('demand_scale', '?')} · "
-        f"solar×{_meta.get('solar_scale', '?')} · wind×{_meta.get('wind_scale', '?')} · "
-        f"{_meta.get('time', '')}"
-    )
-    # ── KPI Row ────────────────────────────────────────────────────────────
-    gap   = r["gap_pct"]
-    g_cls = "kpi-pos" if abs(gap) < 0.5 else "kpi-neg"
-    su    = r["worst_unserved"]["qaoa"]
-    su_cl = "kpi-pos" if su == 0 else "kpi-neg"
-    save  = r["saving_vs_allon_pct"]
-    sv_cl = "kpi-pos" if save > 0 else "kpi-neg"
-
-    st.markdown(f"""
-    <div class="kpi-row">
-      {kpi_html("QAOA + LP Cost", f"₹{lp['cost']/1e5:.1f}L",
-                f"{save:+.1f}% vs All-ON", sv_cl)}
-      {kpi_html("Network MILP", f"₹{r['milp_net']['cost']/1e5:.1f}L",
-                "Classical benchmark", "kpi-neu")}
-      {kpi_html("QAOA Gap to MILP", f"{gap:+.2f}%",
-                "0% = quantum-matches-classical", g_cls)}
-      {kpi_html("Worst Unserved", f"{su:.0f} MWh",
-                "Cloudy/calm/windy stress-test", su_cl)}
-      {kpi_html("CO₂ Emissions", f"{lp['emissions_t']:.0f} t",
-                "Across 3 dispatch blocks", "kpi-neu")}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Method Comparison Table ─────────────────────────────────────────────
-    st.markdown('<div class="section-header">Method Comparison</div>', unsafe_allow_html=True)
-    methods = {
-        "QAOA + LP (ours)": (r["lp_qaoa"],   r["worst_unserved"]["qaoa"]),
-        "QAOA + QP":        (r["qp_qaoa"],   r["lp_qaoa"]["unserved_mwh"]),
-        "Network MILP":     (r["milp_net"],  r["worst_unserved"]["milp"]),
-        "Greedy + LP":      (r["lp_greedy"], r["worst_unserved"]["greedy"]),
-        "All-ON + LP":      (r["lp_allon"],  r["worst_unserved"]["allon"]),
-    }
-
-    def pill(txt, cls): return f'<span class="pill {cls}">{txt}</span>'
-
-    rows_html = ""
-    for name, (m, wu) in methods.items():
-        cost = m["cost"] / 1e5
-        co2  = m["emissions_t"]
-        cut  = m["curtail_mwh"]
-        wu_  = wu
-        best = name == "QAOA + LP (ours)"
-        row_cls = "background: #0f1f0f;" if best else ""
-        rows_html += f"""
-        <tr style="{row_cls}">
-          <td>{"⭐ " if best else ""}<b>{name}</b></td>
-          <td>₹ {cost:.1f} L</td>
-          <td>{co2:.0f}</td>
-          <td>{cut:.0f}</td>
-          <td>{wu_:.0f}</td>
-        </tr>"""
-
-    st.markdown(f"""
-    <table class="grid-table">
-      <thead><tr>
-        <th>Method</th><th>Cost (Rs Lakh)</th><th>CO₂ (t)</th>
-        <th>Curtailed (MWh)</th><th>Worst Unserved (MWh)</th>
-      </tr></thead>
-      <tbody>{rows_html}</tbody>
-    </table>
-    """, unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Two columns: Schedule + Training Curve ──────────────────────────────
-    col_l, col_r = st.columns([1, 1])
-
-    with col_l:
-        st.markdown('<div class="section-header">QAOA Unit Commitment Schedule</div>',
-                    unsafe_allow_html=True)
-        gen_names = [g["name"] for g in GENS]
-        G = len(gen_names); T = len(BLOCKS)
-
-        fig_s, ax_s = plt.subplots(figsize=(5.5, 2.4))
-        fig_s.patch.set_facecolor(BG); ax_s.set_facecolor(BG)
-        u = r["u_qaoa"]
-        for i in range(G):
-            for t in range(T):
-                c_fill = "#1a4230" if u[i, t] else "#161b22"
-                c_edge = GREEN if u[i, t] else GRID_COL
-                ax_s.add_patch(plt.Rectangle((t - 0.44, i - 0.44), 0.88, 0.88,
-                                             color=c_fill, edgecolor=c_edge, lw=1.2))
-                ax_s.text(t, i, "ON" if u[i, t] else "off",
-                          ha="center", va="center", fontsize=9, fontweight="600",
-                          color=GREEN if u[i, t] else "#484f58")
-        ax_s.set_xlim(-0.55, T - 0.45); ax_s.set_ylim(-0.55, G - 0.45)
-        ax_s.set_xticks(range(T)); ax_s.set_xticklabels(BLOCKS, color=FG, fontsize=8)
-        ax_s.set_yticks(range(G)); ax_s.set_yticklabels(gen_names, color=FG, fontsize=8)
-        ax_s.tick_params(colors=FG, length=0)
-        for sp in ax_s.spines.values(): sp.set_visible(False)
-        fig_s.tight_layout(pad=0.5)
-        st.pyplot(fig_s, width='stretch')
-
-    with col_r:
-        st.markdown('<div class="section-header">QAOA Training Convergence</div>',
-                    unsafe_allow_html=True)
-        hist = r["solver"].history
-        fig_t, ax_t = dark_fig(5.5, 2.4)
-        if hist:
-            xs = range(len(hist))
-            ax_t.plot(xs, hist, color=BLUE, lw=1.8, label="<E> normalised")
-            ax_t.axhline(0, color=GREEN, ls="--", lw=1, label="QUBO optimum")
-            ax_t.fill_between(xs, hist, 0, alpha=0.08, color=BLUE)
-            ax_t.set_xlabel("Optimiser Iteration", color=FG, fontsize=8)
-            ax_t.set_ylabel("Normalised ⟨E⟩\n(0=optimal, 1=random)", color=FG, fontsize=8)
-            ax_t.legend(fontsize=7, facecolor=BG, edgecolor=GRID_COL, labelcolor=FG)
-        fig_t.tight_layout(pad=0.5)
-        st.pyplot(fig_t, width='stretch')
-
-    # ── Supply vs Demand Bar Chart ──────────────────────────────────────────
-    st.markdown('<div class="section-header">Supply vs Demand by Block (MW)</div>',
-                unsafe_allow_html=True)
-    blocks_data = lp.get("blocks", [])
-    if blocks_data:
-        fig_d, ax_d = dark_fig(9, 2.8)
-        blk_labels = [b.get("block", f"B{i}") for i, b in enumerate(blocks_data)]
-        demand_vals   = [b.get("demand_mw", 0) for b in blocks_data]
-        thermal_vals  = [b.get("thermal_mw", 0) for b in blocks_data]
-        renew_vals    = [b.get("renewable_mw", 0) for b in blocks_data]
-        x = np.arange(len(blk_labels)); w = 0.25
-        ax_d.bar(x - w, demand_vals,  w * 2, color=AMBER,  label="Demand",    alpha=0.9, edgecolor=BG, lw=0.5)
-        ax_d.bar(x,     thermal_vals, w * 2, color=BLUE,   label="Thermal",   alpha=0.9, edgecolor=BG, lw=0.5)
-        ax_d.bar(x + w, renew_vals,   w * 2, color=GREEN,  label="Renewable", alpha=0.9, edgecolor=BG, lw=0.5)
-        ax_d.set_xticks(x); ax_d.set_xticklabels(blk_labels, color=FG, fontsize=8)
-        ax_d.set_ylabel("MW", color=FG, fontsize=8)
-        ax_d.legend(fontsize=7.5, facecolor=BG, edgecolor=GRID_COL, labelcolor=FG)
-        fig_d.tight_layout(pad=0.5)
-        st.pyplot(fig_d, width='stretch')
-
-    st.info("ℹ️  At 9–16 qubits, classical solvers are instant. "
-            "This is a hardware-ready hybrid pipeline validated against exact MILP baselines. "
-            "No quantum-advantage claim at this problem size — QAOA scales to future grid sizes.")
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — NETWORK MAP
-# ════════════════════════════════════════════════════════════════════════════
-with tab_net:
-    st.markdown('<div class="section-header">5-Node AP Transmission Network</div>',
-                unsafe_allow_html=True)
-
-    if st.session_state.result:
-        col_map, col_info = st.columns([2, 1])
-        with col_map:
-            fig_net = draw_network(st.session_state.result)
-            st.pyplot(fig_net, width='stretch')
-            st.caption("Line colour: 🟢 <60%  🟡 60–85%  🔴 >85% loaded")
-
-        with col_info:
-            st.markdown('<div class="section-header">Line Loading (Peak)</div>',
-                        unsafe_allow_html=True)
-            n_lines = len(LINES)
-            max_loading = np.zeros(n_lines)
-            for bl in r["lp_qaoa"]["blocks"]:
-                if "line_loading_pct" in bl:
-                    max_loading = np.maximum(max_loading, bl["line_loading_pct"])
-
-            rows_net = ""
-            for l, (frm, to, cap) in enumerate(LINES):
-                load = max_loading[l]
-                if load < 60:   cls, label = "pill-on",  "OK"
-                elif load < 85: cls, label = "pill-warn", "WARN"
-                else:           cls, label = "pill-crit", "CRIT"
-                rows_net += f"""<tr>
-                  <td>{frm}→{to}</td>
-                  <td>{cap:.0f} MW</td>
-                  <td>{load:.1f}%</td>
-                  <td><span class="pill {cls}">{label}</span></td>
-                </tr>"""
-            st.markdown(f"""
-            <table class="grid-table">
-              <thead><tr><th>Line</th><th>Cap.</th><th>Peak %</th><th>Status</th></tr></thead>
-              <tbody>{rows_net}</tbody>
-            </table>""", unsafe_allow_html=True)
-
-        st.markdown('<div class="section-header">Line Flows by Block</div>',
-                    unsafe_allow_html=True)
-        rows_flow = []
-        for bl in r["lp_qaoa"]["blocks"]:
-            if "line_loading_pct" not in bl:
-                continue
-            for l, (frm, to, cap) in enumerate(LINES):
-                rows_flow.append({
-                    "Block": bl["block"],
-                    "Line": f"{frm} → {to}",
-                    "Flow (MW)": round(bl["flow_mw"][l], 1),
-                    "Capacity (MW)": cap,
-                    "Loading (%)": round(bl["line_loading_pct"][l], 1),
-                })
-        if rows_flow:
-            st.dataframe(pd.DataFrame(rows_flow), width='stretch', hide_index=True)
+    if os.path.exists(IBM_RESULTS):
+        d = _load()
+        if d:
+            st.session_state.ibm_data = d
+            st.session_state.ibm_live = True
+        st.success("IBM Quantum results loaded — see Results tab.")
+        st.rerun()
+    elif proc.returncode != 0:
+        st.error(f"IBM submit failed (exit {proc.returncode}). Check log. Verify IBM_QUANTUM_TOKEN.")
+    elif _jid:
+        st.warning(f"Job `{_jid}` is queued/running. Use Fetch Job tab when it finishes.")
     else:
-        st.info("Run optimisation first (click ▶ Optimise Now in sidebar).")
+        st.warning("Run finished but no Job ID found. See log.")
 
+# ─── Tabs ──────────────────────────────────────────────────────────────────
+tab_res, tab_fetch, tab_net, tab_pqc = st.tabs(
+    ["Results", "Fetch Job", "Network Map", "PQC Security"])
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — IBM QUANTUM
-# ════════════════════════════════════════════════════════════════════════════
-with tab_ibm:
-    st.markdown('<div class="section-header">IBM Quantum Platform Integration</div>',
-                unsafe_allow_html=True)
+# ══ TAB 1: RESULTS ══════════════════════════════════════════════════════════
+with tab_res:
+    ibm_data = st.session_state.ibm_data or _load()
 
-    # Connectivity status (token present? service reachable?)
-    _tok = get_ibm_token()
-    if not _tok:
-        st.error(
-            "IBM API token not found. On Streamlit Cloud go to **Manage app → Settings → Secrets** and add:\n\n"
-            '```toml\nIBM_QUANTUM_TOKEN = "your-token-from-quantum.cloud.ibm.com"\n```'
+    if ibm_data is None:
+        st.info(
+            "### No results yet\n\n"
+            "**Steps to get live IBM Quantum results:**\n"
+            "1. Adjust scenario sliders in the sidebar (demand / solar / wind)\n"
+            "2. Choose QPU backend (or keep *least-busy*)\n"
+            "3. Click **Run on IBM Quantum**\n\n"
+            "The app will train MA-QAOA, submit the circuit to the QPU, "
+            "and show live hardware results here.\n\n"
+            "If Streamlit Cloud times out (queue > 60 s), use the **Fetch Job** tab with your Job ID."
         )
     else:
-        st.success(f"IBM token loaded ({len(_tok)} chars). Connection will be tested on submit.")
+        hw_ = ibm_data.get("hardware",{})
+        id_ = ibm_data.get("ideal",{})
+        ml_ = ibm_data.get("milp",{})
+        jid = ibm_data.get("job_id","—")
+        bk  = ibm_data.get("backend","—")
+        rt  = ibm_data.get("run_time_s","—")
+        url = ibm_data.get("ibm_platform_url","")
+        shr = ibm_data.get("shots","—")
+        src = "LIVE IBM (this session)" if st.session_state.ibm_live else f"IBM QPU · {bk}"
 
-    # Show sync status — detects when PowerShell commands update ibm_results.json
-    _ibm_file_exists = os.path.exists(IBM_RESULTS)
-    if _ibm_file_exists:
-        _ibm_mtime_str = time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(IBM_RESULTS)))
-        _sync_cls = "badge-green" if _ibm_new_results else "badge"
-        _sync_label = "NEW RESULTS" if _ibm_new_results else "synced"
+        url_link = f"<a href='{url}' target='_blank' style='color:#58a6ff;'>Open on IBM Platform</a>" if url else ""
         st.markdown(f"""
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
-          <span class="badge {_sync_cls}">{_sync_label}</span>
-          <span style="color:#8b949e;font-size:0.75rem;">ibm_results.json updated at {_ibm_mtime_str}</span>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.warning("No `ibm_results.json` found yet. Run a job from PowerShell or use **Submit** below, then **Fetch**.")
+        <div style="background:#0f2419;border:1px solid #196c2e;border-radius:10px;
+                    padding:12px 18px;margin-bottom:16px;display:flex;
+                    justify-content:space-between;align-items:center;">
+          <div>
+            <span class="badge badge-green">{src}</span>
+            <span style="color:#c9d1d9;font-size:0.85rem;margin-left:8px;">
+              Backend <b>{bk}</b> · Job <code>{jid}</code> · {shr} shots · {rt}s
+            </span>
+          </div>
+          {url_link}
+        </div>""", unsafe_allow_html=True)
 
-    col_sync = st.columns([1, 1, 1, 1])
-    with col_sync[0]:
-        if st.button("🔄 Sync from PowerShell", key="ibm_sync"):
-            st.rerun()
+        hw_cost = hw_.get("cost_lakh",0)
+        id_cost = id_.get("cost_lakh",0)
+        ml_cost = ml_.get("cost_lakh",0)
+        prob    = hw_.get("prob_in_top1pct",0)
+        unsrv   = hw_.get("unserved_mwh",0)
+        emis    = hw_.get("emissions_t",0)
 
-    # Pre-fill job ID from last PowerShell / dashboard submit
-    _default_jid = ""
-    if os.path.exists(IBM_STATE):
-        try:
-            with open(IBM_STATE) as _sf:
-                _default_jid = json.load(_sf).get("job_id", "") or ""
-        except Exception:
-            pass
-
-    col_sub, col_fetch = st.columns([1, 1])
-
-    with col_sub:
-        st.markdown("**Submit Job**")
-        # Default to real IBM when previous results exist; otherwise fake for first-time users
-        _default_fake = not _ibm_file_exists
-        fake_mode   = st.checkbox("Use noisy fake backend (no IBM account needed)",
-                                  value=_default_fake, key="ibm_fake")
-        if not fake_mode:
-            st.caption("⚠️ Real IBM: Submit only queues the job. After it finishes on the platform, use **Fetch**.")
-        ibm_shots   = st.select_slider("Shots", [1024, 2048, 4096, 8192, 16384], value=4096, key="ibm_shots")
-        ibm_backend = st.selectbox(
-            "Backend",
-            ["least-busy", "ibm_fez", "ibm_marrakesh", "ibm_kingston",
-             "ibm_brisbane", "ibm_sherbrooke", "ibm_torino"],
-            index=0, key="ibm_bk",
-        )
-        ibm_opt     = st.selectbox("Optimizer", ["COBYLA", "SPSA", "PARAM_SHIFT"], key="ibm_opt")
-        ibm_reps    = st.slider("QAOA layers (p)", 1, 4, 2, key="ibm_reps")
-
-        if st.button("▶  Submit to IBM Quantum", type="primary", key="ibm_submit"):
-            with st.spinner("Training QAOA → transpiling → submitting …"):
-                cmd = [sys.executable, os.path.join(APP_DIR, "ibm_run.py"), "submit",
-                       "--shots", str(ibm_shots), "--optimizer", ibm_opt,
-                       "--reps", str(ibm_reps)]
-                if fake_mode:
-                    cmd.append("--fake")
-                if ibm_backend and ibm_backend != "least-busy":
-                    cmd += ["--backend", ibm_backend]
-                proc = subprocess.run(
-                    cmd, capture_output=True, text=True, cwd=APP_DIR,
-                    env=env_with_ibm_token(),
-                )
-            out_text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-            st.code(out_text or "(no output)", language="text")
-            if proc.returncode != 0:
-                st.error(
-                    f"Submit failed (exit code {proc.returncode}). Check the log above. "
-                    "If token-related: set IBM_QUANTUM_TOKEN in Streamlit Secrets."
-                )
-            else:
-                # Prefer state file (written on every real submit); fall back to results
-                jid, url = "", ""
-                if os.path.exists(IBM_STATE):
-                    try:
-                        with open(IBM_STATE) as f:
-                            st_data = json.load(f)
-                        jid = st_data.get("job_id", "") or ""
-                    except Exception:
-                        pass
-                if os.path.exists(IBM_RESULTS):
-                    try:
-                        with open(IBM_RESULTS) as f:
-                            ibm_res = json.load(f)
-                        jid = jid or ibm_res.get("job_id", "")
-                        url = ibm_res.get("ibm_platform_url", "")
-                    except Exception:
-                        pass
-                if jid and "local" not in str(jid).lower() and "fake" not in str(jid).lower():
-                    st.success(f"✅ Job submitted: `{jid}`")
-                    st.info("Job is on the IBM queue. When it finishes, paste the Job ID on the right and click **Fetch**.")
-                    if url:
-                        st.markdown(f"[🔗 View on IBM Quantum Platform]({url})")
-                    else:
-                        st.markdown(f"[🔗 Open IBM Quantum Jobs](https://quantum.cloud.ibm.com/jobs/{jid})")
-                elif fake_mode:
-                    st.success("✅ Fake-backend run finished. Results written to `ibm_results.json`.")
-                    st.rerun()
-                else:
-                    st.warning("Submit finished but no job_id was found. Check the log above.")
-
-    with col_fetch:
-        st.markdown("**Fetch Completed Job**")
-        if "fetch_jid" not in st.session_state or not st.session_state.get("fetch_jid"):
-            if _default_jid:
-                st.session_state["fetch_jid"] = _default_jid
-        job_id_input = st.text_input("Job ID", key="fetch_jid",
-                                     placeholder="e.g. db3qc2klf4us73c1osc0")
-        if st.button("⬇  Fetch from IBM", key="ibm_fetch") and job_id_input.strip():
-            with st.spinner("Fetching results from IBM Quantum …"):
-                proc = subprocess.run(
-                    [sys.executable, os.path.join(APP_DIR, "ibm_run.py"), "fetch", job_id_input.strip()],
-                    capture_output=True, text=True, cwd=APP_DIR,
-                    env=env_with_ibm_token(),
-                )
-            out_text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-            st.code(out_text or "(no output)", language="text")
-            if proc.returncode != 0:
-                st.error(f"Fetch failed (exit code {proc.returncode}). Job may still be running — try again later.")
-            elif os.path.exists(IBM_RESULTS):
-                try:
-                    with open(IBM_RESULTS) as f:
-                        st.session_state.ibm_data = json.load(f)
-                    st.session_state.ibm_live = True
-                except Exception:
-                    pass
-                st.success("✅ Live IBM results loaded into the dashboard.")
-                st.rerun()
-            else:
-                st.warning("Fetch finished but `ibm_results.json` was not created. See log above.")
-
-    # ── Last Saved IBM Results ──────────────────────────────────────────────
-    _live_lbl = "LIVE (this session)" if st.session_state.get("ibm_live") else "file on disk (may be sample/cached)"
-    st.markdown(
-        f'<div class="section-header">IBM Hardware Results — {_live_lbl}</div>',
-        unsafe_allow_html=True,
-    )
-    try:
-        with open(IBM_RESULTS) as f:
-            ibm_data = json.load(f)
-        hw_ = ibm_data.get("hardware", {})
-        id_ = ibm_data.get("ideal",    {})
-        ml  = ibm_data.get("milp",     {})
-        jid = ibm_data.get("job_id", "—")
-        bk  = ibm_data.get("backend",  "—")
-        rt  = ibm_data.get("run_time_s", "—")
-        url = ibm_data.get("ibm_platform_url", "")
-
-        col_a, col_b, col_c, col_d = st.columns(4)
+        cost_delta = f"{(hw_cost-ml_cost)/ml_cost*100:+.1f}% vs MILP" if ml_cost else ""
         st.markdown(f"""
         <div class="kpi-row">
-          {kpi_html("Hardware Cost", f"₹{hw_.get('cost_lakh', 0):.1f} L",
-                    f"IBM {bk}", "kpi-neu")}
-          {kpi_html("Ideal Aer Cost", f"₹{id_.get('cost_lakh', 0):.1f} L",
-                    "Noiseless reference", "kpi-neu")}
-          {kpi_html("Classical MILP", f"₹{ml.get('cost_lakh', 0):.1f} L",
-                    "Benchmark", "kpi-neu")}
-          {kpi_html("P(top 1% states)", f"{hw_.get('prob_in_top1pct', 0):.0%}",
-                    "30× over random baseline", "kpi-pos")}
-        </div>
-        """, unsafe_allow_html=True)
+          {kpi("Hardware Cost",f"Rs {hw_cost:.1f} L",cost_delta,"kpi-neg" if ml_cost and hw_cost>ml_cost else "kpi-pos")}
+          {kpi("Ideal Aer Cost",f"Rs {id_cost:.1f} L","Noiseless reference","kpi-neu")}
+          {kpi("Classical MILP",f"Rs {ml_cost:.1f} L","Benchmark","kpi-neu")}
+          {kpi("P(top 1% states)",f"{prob:.0%}","30x over random","kpi-pos" if prob>=0.01 else "kpi-neg")}
+          {kpi("Unserved Energy",f"{unsrv:.0f} MWh","0 = fully served","kpi-pos" if unsrv==0 else "kpi-neg")}
+          {kpi("CO2 Emissions",f"{emis:.0f} t","Hardware schedule","kpi-neu")}
+        </div>""", unsafe_allow_html=True)
 
-        # Schedule from hardware
-        gens_ibm = ibm_data.get("generators", ["Coal-1", "Gas", "Hydro"])
-        blks_ibm = ibm_data.get("blocks", ["00-06", "06-12", "12-18"])
-        sched    = hw_.get("schedule", [])
-        if sched:
-            st.markdown('<div class="section-header">Hardware Unit Commitment Schedule</div>',
-                        unsafe_allow_html=True)
-            rows_ibm = ""
-            for i, gname in enumerate(gens_ibm):
+        gens_ibm = ibm_data.get("generators",[])
+        blks_ibm = ibm_data.get("blocks",[])
+        sched_hw = hw_.get("schedule",[])
+        sched_id = id_.get("schedule",[])
+
+        def _stbl(sched,title,gens,blks):
+            hdr  = "".join(f"<th>{b}</th>" for b in blks)
+            rows = ""
+            for i,gname in enumerate(gens):
                 cells = "".join(
                     f'<td><span class="pill {"pill-on" if sched[i][t] else "pill-off"}">'
                     f'{"ON" if sched[i][t] else "off"}</span></td>'
-                    for t in range(len(blks_ibm))
-                )
-                rows_ibm += f"<tr><td><b>{gname}</b></td>{cells}</tr>"
-            hdr = "".join(f"<th>{b}</th>" for b in blks_ibm)
-            st.markdown(f"""
-            <table class="grid-table">
-              <thead><tr><th>Generator</th>{hdr}</tr></thead>
-              <tbody>{rows_ibm}</tbody>
-            </table>""", unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
+                    for t in range(len(blks)))
+                rows += f"<tr><td><b>{gname}</b></td>{cells}</tr>"
+            return (f'<div class="section-header">{title}</div>'
+                    f'<table class="grid-table"><thead><tr><th>Generator</th>{hdr}</tr></thead>'
+                    f'<tbody>{rows}</tbody></table>')
 
-        if url and "local" not in jid:
-            st.markdown(f"""
-            <div style="background:#0d1117;border:1px solid #1f3a57;border-radius:8px;
-                        padding:12px 18px;display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
-              <div>
-                <span style="color:#8b949e;font-size:0.72rem;font-weight:600;letter-spacing:0.8px;">JOB ID</span><br>
-                <span style="font-family:'JetBrains Mono',monospace;color:#58a6ff;font-size:0.85rem;">{jid}</span>
-              </div>
-              <div style="text-align:right">
-                <span style="color:#8b949e;font-size:0.72rem;">Runtime: {rt}s · Backend: {bk}</span><br>
-                <a href="{url}" target="_blank" style="color:#388bfd;font-size:0.82rem;text-decoration:none;">
-                  🔗 Open on IBM Quantum Platform →</a>
-              </div>
-            </div>""", unsafe_allow_html=True)
-    except FileNotFoundError:
-        st.info("No IBM results yet. Submit a job above or run: `python hardware.py`")
+        if sched_hw and gens_ibm and blks_ibm:
+            colA,colB = st.columns(2)
+            with colA: st.markdown(_stbl(sched_hw,"Hardware QPU Schedule",gens_ibm,blks_ibm),unsafe_allow_html=True)
+            with colB: st.markdown(_stbl(sched_id,"Ideal Aer Schedule",gens_ibm,blks_ibm),unsafe_allow_html=True)
+            st.markdown("<br>",unsafe_allow_html=True)
 
+        dem_mw = ibm_data.get("demand_mw",[])
+        ren_mw = ibm_data.get("renewable_mw",[])
+        if dem_mw and blks_ibm:
+            st.markdown('<div class="section-header">Demand & Renewable by Block (MW)</div>',unsafe_allow_html=True)
+            fig_d,ax_d = dark_fig(9,2.8)
+            x = np.arange(len(blks_ibm)); w=0.35
+            ax_d.bar(x-w/2,dem_mw,w,color=AMBER,label="Demand",alpha=0.9,edgecolor=BG,lw=0.5)
+            ax_d.bar(x+w/2,ren_mw if ren_mw else [0]*len(blks_ibm),w,color=GREEN,label="Renewable",alpha=0.9,edgecolor=BG,lw=0.5)
+            ax_d.set_xticks(x); ax_d.set_xticklabels(blks_ibm,color=FG,fontsize=8)
+            ax_d.set_ylabel("MW",color=FG,fontsize=8)
+            ax_d.legend(fontsize=7.5,facecolor=BG,edgecolor=GRID_COL,labelcolor=FG)
+            fig_d.tight_layout(pad=0.5)
+            st.pyplot(fig_d,use_container_width=True)
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 4 — PQC SECURITY
-# ════════════════════════════════════════════════════════════════════════════
+        lf_list = hw_.get("line_flows",[])
+        if lf_list:
+            st.markdown('<div class="section-header">Transmission Line Loading</div>',unsafe_allow_html=True)
+            rows_lf=""
+            for lf in lf_list:
+                load=lf.get("max_loading_pct",0)
+                cls="pill-on" if load<60 else ("pill-warn" if load<85 else "pill-crit")
+                lbl="OK" if load<60 else ("WARN" if load<85 else "CRIT")
+                rows_lf+=(f'<tr><td>{lf.get("from","?")} to {lf.get("to","?")}</td>'
+                           f'<td>{lf.get("capacity_mw",0):.0f} MW</td>'
+                           f'<td>{load:.1f}%</td>'
+                           f'<td><span class="pill {cls}">{lbl}</span></td></tr>')
+            st.markdown(
+                f'<table class="grid-table"><thead><tr><th>Line</th><th>Capacity</th>'
+                f'<th>Peak Load</th><th>Status</th></tr></thead><tbody>{rows_lf}</tbody></table>',
+                unsafe_allow_html=True)
+            st.markdown("<br>",unsafe_allow_html=True)
+
+        st.markdown('<div class="section-header">Hardware vs Ideal vs MILP</div>',unsafe_allow_html=True)
+        comp=""
+        for lbl_r,dat_r in [("IBM Hardware (QPU)",hw_),("Ideal Aer (noiseless)",id_),("Classical MILP",ml_)]:
+            c_r  = dat_r.get("cost_lakh",0)
+            em_r = dat_r.get("emissions_t","—")
+            cu_r = dat_r.get("curtail_mwh","—")
+            un_r = dat_r.get("unserved_mwh","—")
+            pr_r = f"{dat_r['prob_in_top1pct']:.0%}" if "prob_in_top1pct" in dat_r else "—"
+            qo_r = ("YES" if dat_r.get("qubo_optimum_sampled") else "NO") if "qubo_optimum_sampled" in dat_r else "—"
+            comp+=(f'<tr><td><b>{lbl_r}</b></td><td>Rs {c_r:.1f} L</td>'
+                   f'<td>{em_r if isinstance(em_r,str) else f"{em_r:.0f}"}</td>'
+                   f'<td>{cu_r if isinstance(cu_r,str) else f"{cu_r:.0f}"}</td>'
+                   f'<td>{un_r if isinstance(un_r,str) else f"{un_r:.0f}"}</td>'
+                   f'<td>{pr_r}</td><td>{qo_r}</td></tr>')
+        st.markdown(
+            f'<table class="grid-table"><thead><tr><th>Method</th><th>Cost</th>'
+            f'<th>CO2 (t)</th><th>Curtailed (MWh)</th><th>Unserved (MWh)</th>'
+            f'<th>P(top 1%)</th><th>QUBO Opt?</th></tr></thead><tbody>{comp}</tbody></table>',
+            unsafe_allow_html=True)
+        st.info("At 9 qubits (3 generators x 3 blocks), classical solvers are instant. "
+                "This is a hardware-validated hybrid pipeline benchmarked against MILP. "
+                "QAOA scales to larger grids where classical methods become intractable.")
+
+# ══ TAB 2: FETCH JOB ════════════════════════════════════════════════════════
+with tab_fetch:
+    st.markdown('<div class="section-header">IBM Quantum Platform Integration</div>',unsafe_allow_html=True)
+    st.success(f"IBM token loaded ({len(_tok)} chars). Ready to connect.")
+
+    if os.path.exists(IBM_RESULTS):
+        mt=time.strftime("%d %b %Y %H:%M:%S",time.localtime(os.path.getmtime(IBM_RESULTS)))
+        cls_="badge-green" if _ibm_new else "badge"
+        lbl_="NEW RESULTS" if _ibm_new else "synced"
+        st.markdown(f'<div style="margin-bottom:12px;"><span class="badge {cls_}">{lbl_}</span>'
+                    f'<span style="color:#8b949e;font-size:0.75rem;margin-left:8px;">ibm_results.json updated: {mt}</span></div>',
+                    unsafe_allow_html=True)
+    else:
+        st.warning("No ibm_results.json yet — appears after a successful run or fetch.")
+
+    c_sub,c_fetch = st.columns(2)
+
+    with c_sub:
+        st.markdown("**Submit a New Job**")
+        _fake = st.checkbox("Use fake backend (testing only)",value=False,key="tab_fake")
+        _ts   = st.select_slider("Shots",[1024,2048,4096,8192],value=4096,key="tab_shots")
+        _tb   = st.selectbox("Backend",["least-busy","ibm_fez","ibm_marrakesh","ibm_kingston",
+                                         "ibm_brisbane","ibm_sherbrooke","ibm_torino"],index=0,key="tab_bk")
+        _to   = st.selectbox("Optimizer",["COBYLA","SPSA","PARAM_SHIFT"],key="tab_opt")
+        _tr   = st.slider("QAOA layers",1,4,2,key="tab_reps")
+        if st.button("Submit to IBM Quantum",type="primary",key="tab_submit"):
+            _c=[sys.executable,os.path.join(APP_DIR,"ibm_run.py"),"submit",
+                "--shots",str(_ts),"--optimizer",_to,"--reps",str(_tr)]
+            if _fake: _c.append("--fake")
+            if _tb and _tb!="least-busy": _c+=["--backend",_tb]
+            with st.spinner("Training QAOA and submitting ..."):
+                _pr=subprocess.run(_c,capture_output=True,text=True,cwd=APP_DIR,env=env_with_ibm_token())
+            _o=(_pr.stdout or "")+(("\n"+_pr.stderr) if _pr.stderr else "")
+            with st.expander("Submit log",expanded=(_pr.returncode!=0)):
+                st.code(_o or "(no output)",language="text")
+            if _pr.returncode==0:
+                _j2=_djid()
+                if _j2: st.session_state["fetch_jid"]=_j2
+                if _fake:
+                    st.success("Fake run complete.")
+                    if os.path.exists(IBM_RESULTS):
+                        st.session_state.ibm_data=_load(); st.session_state.ibm_live=True
+                    st.rerun()
+                elif _j2:
+                    st.success(f"Job submitted: `{_j2}`")
+                    st.info("Paste Job ID on the right and click Fetch when done.")
+                    st.markdown(f"[Open on IBM Platform](https://quantum.cloud.ibm.com/jobs/{_j2})")
+            else:
+                st.error(f"Submit failed (exit {_pr.returncode}).")
+
+    with c_fetch:
+        st.markdown("**Fetch a Completed Job**")
+        st.caption("Use when submit timed out on Streamlit Cloud.")
+        if not st.session_state.get("fetch_jid"):
+            dj=_djid()
+            if dj: st.session_state["fetch_jid"]=dj
+        jid_inp=st.text_input("Job ID",key="fetch_jid",placeholder="e.g. db3qc2klf4us73c1osc0")
+        if st.button("Fetch from IBM",key="ibm_fetch") and jid_inp.strip():
+            with st.spinner("Fetching results from IBM Quantum ..."):
+                _fp=subprocess.run([sys.executable,os.path.join(APP_DIR,"ibm_run.py"),"fetch",jid_inp.strip()],
+                                   capture_output=True,text=True,cwd=APP_DIR,env=env_with_ibm_token())
+            _fo=(_fp.stdout or "")+(("\n"+_fp.stderr) if _fp.stderr else "")
+            with st.expander("Fetch log",expanded=(_fp.returncode!=0)):
+                st.code(_fo or "(no output)",language="text")
+            if _fp.returncode!=0:
+                st.error(f"Fetch failed (exit {_fp.returncode}). Job may still be running.")
+            elif os.path.exists(IBM_RESULTS):
+                d=_load()
+                if d: st.session_state.ibm_data=d; st.session_state.ibm_live=True
+                st.success("Live IBM results loaded. Go to Results tab.")
+                st.rerun()
+            else:
+                st.warning("Fetch finished but ibm_results.json not created. See log.")
+        st.divider()
+        if st.button("Reload ibm_results.json from disk",key="ibm_sync"):
+            d=_load()
+            if d:
+                st.session_state.ibm_data=d; st.session_state.ibm_live=False
+                st.success("Loaded from disk."); st.rerun()
+            else:
+                st.warning("No ibm_results.json found.")
+
+# ══ TAB 3: NETWORK MAP ══════════════════════════════════════════════════════
+with tab_net:
+    st.markdown('<div class="section-header">5-Node AP Transmission Network</div>',unsafe_allow_html=True)
+    ibm_data = st.session_state.ibm_data or _load()
+    if ibm_data is None:
+        st.info("Run or fetch an IBM job first to see the live network map.")
+    else:
+        lf_list = ibm_data.get("hardware",{}).get("line_flows",[])
+        max_load = np.zeros(len(LINES))
+        for idx,lf in enumerate(lf_list):
+            if idx<len(LINES): max_load[idx]=lf.get("max_loading_pct",0)
+
+        fig_net,ax_net = plt.subplots(figsize=(9,4.5))
+        fig_net.patch.set_facecolor(BG); ax_net.set_facecolor(BG)
+        ax_net.set_xlim(-0.05,1.05); ax_net.set_ylim(-0.05,1.05); ax_net.axis("off")
+
+        for l,(frm,to,cap) in enumerate(LINES):
+            x0,y0=NODE_POS.get(frm,(0.5,0.5)); x1,y1=NODE_POS.get(to,(0.5,0.5))
+            load=max_load[l]
+            color=GREEN if load<60 else (AMBER if load<85 else RED)
+            ax_net.plot([x0,x1],[y0,y1],color=color,lw=2+load/30,alpha=0.85,zorder=1)
+            mx,my=(x0+x1)/2,(y0+y1)/2
+            ax_net.text(mx,my+0.03,f"{load:.0f}%",color=color,fontsize=8,ha="center",fontweight="600",zorder=4)
+
+        gen_at={}
+        for i in range(len(GENS)): gen_at.setdefault(GEN_NODE[i],[]).append(GENS[i]["name"])
+        for node,(nx,ny) in NODE_POS.items():
+            ax_net.add_patch(plt.Circle((nx,ny),0.055,color="#1c2a3a",zorder=2,edgecolor=BLUE,linewidth=1.5))
+            ax_net.text(nx,ny,node,color="#f0f6fc",fontsize=9,ha="center",va="center",fontweight="bold",zorder=5)
+            sub="  ".join(gen_at.get(node,[]))
+            if sub: ax_net.text(nx,ny-0.11,sub,color="#58a6ff",fontsize=6.5,ha="center",va="top",zorder=3)
+
+        ax_net.legend(handles=[
+            mpatches.Patch(color=GREEN,label="< 60% loaded"),
+            mpatches.Patch(color=AMBER,label="60-85%"),
+            mpatches.Patch(color=RED,  label="> 85% congested"),
+        ],loc="lower right",fontsize=7.5,facecolor="#161b22",edgecolor=GRID_COL,labelcolor=FG)
+        fig_net.tight_layout(pad=0.3)
+        st.pyplot(fig_net,use_container_width=True)
+        st.caption("Green <60%  Yellow 60-85%  Red >85% loaded | Live IBM hardware data")
+
+# ══ TAB 4: PQC SECURITY ═════════════════════════════════════════════════════
 with tab_pqc:
-    st.markdown('<div class="section-header">Post-Quantum Cryptography Shield</div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Post-Quantum Cryptography Shield</div>',unsafe_allow_html=True)
+    st.markdown("Power grids are critical infrastructure. "
+                "A *harvest-now, decrypt-later* attack could expose dispatch schedules to a future quantum adversary. "
+                "Our PQC layer wraps every IBM result with three-layer quantum-resistant protection.")
 
-    st.markdown("""
-    Power grids are **critical national infrastructure**. A *"harvest now, decrypt later"* attack
-    could expose dispatch schedules, demand forecasts, and generator ON/OFF decisions to a future
-    quantum adversary. Our PQC layer provides three-layer quantum-resistant protection.
-    """)
+    c1,c2,c3=st.columns(3)
+    for col,(layer,algo,std,purpose,color) in zip([c1,c2,c3],[
+        ("Key Encapsulation","ML-KEM-768 (Kyber)","FIPS 203",
+         "Generates quantum-resistant 256-bit symmetric key per dispatch cycle",GREEN),
+        ("Digital Signature","ML-DSA-65 (Dilithium)","FIPS 204",
+         "Signs plaintext before encryption -- detects tampering & injection",BLUE),
+        ("Symmetric Payload","AES-256-GCM","FIPS 197",
+         "Authenticated encryption of schedule payload with integrity tag",PURPLE),
+    ]):
+        col.markdown(
+            f'<div style="background:#0d1117;border:1px solid #1e2a38;border-radius:10px;'
+            f'padding:18px;border-top:3px solid {color};">'
+            f'<div style="font-size:0.7rem;color:#8b949e;font-weight:600;letter-spacing:0.8px;'
+            f'text-transform:uppercase;margin-bottom:6px;">{layer}</div>'
+            f'<div style="font-size:1.05rem;font-weight:700;color:#f0f6fc;'
+            f'font-family:JetBrains Mono,monospace;margin-bottom:4px;">{algo}</div>'
+            f'<div style="font-size:0.7rem;color:{color};font-weight:500;margin-bottom:10px;">{std}</div>'
+            f'<div style="font-size:0.78rem;color:#8b949e;line-height:1.5;">{purpose}</div>'
+            f'</div>',unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
-    for col, (layer, algo, std, purpose, color) in zip(
-        [c1, c2, c3],
-        [
-            ("Key Encapsulation", "ML-KEM-768\n(Kyber)", "FIPS 203",
-             "Generates quantum-resistant 256-bit symmetric key per dispatch cycle", GREEN),
-            ("Digital Signature", "ML-DSA-65\n(Dilithium)", "FIPS 204",
-             "Signs plaintext before encryption — detects tampering & injection", BLUE),
-            ("Symmetric Payload", "AES-256-GCM", "FIPS 197",
-             "Authenticated encryption of schedule payload with integrity tag", PURPLE),
-        ]
-    ):
-        col.markdown(f"""
-        <div style="background:#0d1117;border:1px solid #1e2a38;border-radius:10px;
-                    padding:18px;border-top:3px solid {color};">
-          <div style="font-size:0.7rem;color:#8b949e;font-weight:600;letter-spacing:0.8px;
-                      text-transform:uppercase;margin-bottom:6px;">{layer}</div>
-          <div style="font-size:1.05rem;font-weight:700;color:#f0f6fc;
-                      font-family:'JetBrains Mono',monospace;margin-bottom:4px;">{algo}</div>
-          <div style="font-size:0.7rem;color:{color};font-weight:500;margin-bottom:10px;">{std}</div>
-          <div style="font-size:0.78rem;color:#8b949e;line-height:1.5;">{purpose}</div>
-        </div>""", unsafe_allow_html=True)
+    st.code(
+        "IBM QPU Result (ibm_results.json)\n"
+        "      |  protect()\n"
+        "      v\n"
+        "  ML-KEM-768  key encapsulation -> 256-bit key\n"
+        "  ML-DSA-65   signature of plaintext\n"
+        "  AES-256-GCM encryption + integrity tag\n"
+        "      v\n"
+        "  ibm_results.enc.json  (quantum-safe at rest)\n"
+        "      |  unprotect()\n"
+        "      v\n"
+        "  AES-256-GCM decrypt + verify tag\n"
+        "  ML-DSA-65   verify signature -> detect tampering\n"
+        "  ML-KEM-768  decapsulate -> recover plaintext\n"
+        "      v\n"
+        "  Dashboard / SLDC Control Room",
+        language="text")
 
-    st.markdown('<div class="section-header">Data Flow Architecture</div>',
-                unsafe_allow_html=True)
-    st.markdown("""
-    ```
-    APSLDC CSV / QAOA Output
-          │
-          ▼  protect()
-    ┌──────────────────────────────────────────────────────────────┐
-    │  Step 1:  ML-KEM-768 key encapsulation  → 256-bit secret key │
-    │  Step 2:  ML-DSA-65 signs plaintext payload                  │
-    │  Step 3:  AES-256-GCM encrypts payload with integrity tag     │
-    └──────────────────────────────────────────────────────────────┘
-          │
-          ▼  ibm_results.enc.json  (quantum-safe at rest)
-    ┌──────────────────────────────────────────────────────────────┐
-    │  unprotect()                                                  │
-    │  Step 1:  AES-256-GCM decrypt + verify integrity tag         │
-    │  Step 2:  ML-DSA-65 verify signature → detect tampering      │
-    │  Step 3:  ML-KEM-768 decapsulate → recover plaintext          │
-    └──────────────────────────────────────────────────────────────┘
-          │
-          ▼  Dashboard / API / SLDC Control Room
-    ```
-    """)
-
-    st.markdown('<div class="section-header">Run PQC Self-Test</div>', unsafe_allow_html=True)
-    if st.button("🔐 Run Full PQC Self-Test (5 tests)", key="pqc_test"):
-        with st.spinner("Running: python pqc.py …"):
-            proc = subprocess.run([sys.executable, os.path.join(APP_DIR, "pqc.py")],
-                                  capture_output=True, text=True,
-                                  cwd=APP_DIR)
-        if proc.returncode == 0:
-            st.success("✅ All 5 PQC tests passed — round-trip, JSON, file-level, tamper-detect, key-persist")
+    st.markdown('<div class="section-header">Run PQC Self-Test</div>',unsafe_allow_html=True)
+    if st.button("Run Full PQC Self-Test",key="pqc_test"):
+        with st.spinner("Running pqc.py ..."):
+            proc=subprocess.run([sys.executable,os.path.join(APP_DIR,"pqc.py")],
+                                capture_output=True,text=True,cwd=APP_DIR)
+        if proc.returncode==0:
+            st.success("All PQC tests passed -- round-trip, JSON, file-level, tamper-detect, key-persist")
         else:
-            st.error("❌ PQC test failed")
-        st.code(proc.stdout or proc.stderr, language="text")
+            st.error("PQC test failed")
+        st.code(proc.stdout or proc.stderr,language="text")
 
-    # Show enc file status
-    st.markdown('<div class="section-header">Encrypted File Status</div>', unsafe_allow_html=True)
-    for fname, label in [(IBM_ENC, "IBM Hardware Results"),
-                          (PQC_KEYS, "Persistent PQC Key Material")]:
-        exists = os.path.exists(fname)
-        size   = os.path.getsize(fname) if exists else 0
-        fname  = os.path.basename(fname)  # display short name
-        cls    = "pill-on" if exists else "pill-crit"
-        txt    = f"Present ({size:,} bytes)" if exists else "Not found"
-        st.markdown(f"""
-        <div style="background:#0d1117;border:1px solid #1e2a38;border-radius:8px;
-                    padding:10px 16px;display:flex;justify-content:space-between;
-                    align-items:center;margin-bottom:8px;">
-          <span style="color:#c9d1d9;font-size:0.82rem;font-family:'JetBrains Mono',monospace;">{fname}</span>
-          <span style="color:#8b949e;font-size:0.75rem;margin:0 12px;">{label}</span>
-          <span class="pill {cls}">{txt}</span>
-        </div>""", unsafe_allow_html=True)
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 5 — QUANTUM RIGOR
-# ════════════════════════════════════════════════════════════════════════════
-with tab_rigor:
-    st.markdown('<div class="section-header">Custom MA-QAOA Ansatz Design</div>',
-                unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("""
-        **Problem Layer U_C(γ)**
-        - Local R_Z rotations weighted by fuel + shadow carbon costs
-        - Inter-bus R_ZZ phase couplings along AP transmission corridors (VSKP–VJA, VJA–KNL)
-        - Inter-block temporal R_ZZ couplings for generator startup & minimum up-time
-
-        **Multi-Angle Mixer U_M(β)**
-        - Generator-specific β parameters (Coal, Gas, Hydro reflect ramp rates)
-        - XY-exchange mixer (R_XX + R_YY) preserving total thermal capacity
-        """)
-    with col2:
-        st.markdown("""
-        **Quantum-Native Optimizers**
-        - **SPSA**: 2 evaluations per iteration, noise-tolerant stochastic approximation
-        - **Parameter-Shift**: Exact quantum gradients ∂⟨H⟩/∂θᵢ = [⟨H(θ+π/2)⟩ − ⟨H(θ−π/2)⟩] / 2
-        - **COBYLA**: Classical fallback for warm-starts
-
-        **Error Mitigation**
-        - M3 Readout: Tensored matrix inversion M⁻¹ p_noisy with simplex projection
-        - ZNE: Digital gate folding G→G(G†G)^k at λ∈{1.0, 2.0, 3.0}, extrapolate to λ→0
-        """)
-
-    st.markdown('<div class="section-header">Tradeoff Studies (static offline plots — not live IBM)</div>',
-                unsafe_allow_html=True)
-    st.caption("These PNGs are pre-generated analysis charts. Live optimise results are on the **Optimise** tab after you click the button.")
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        st.markdown("**Circuit Depth (p) vs Accuracy**")
-        try:
-            st.image(os.path.join(APP_DIR, "depth_tradeoff.png"), width='stretch')
-        except Exception:
-            st.warning("Run `python tradeoff.py` to generate this chart.")
-    with col_g2:
-        st.markdown("**Shot Budget vs Precision**")
-        try:
-            st.image(os.path.join(APP_DIR, "shot_budget.png"), width='stretch')
-        except Exception:
-            st.warning("Run `python tradeoff.py` to generate this chart.")
-
-    # Tradeoff results table
-    try:
-        with open(os.path.join(APP_DIR, "tradeoff_results.json")) as f:
-            t_data = json.load(f)
-        d_study = t_data.get("depth_study", {})
-        rows = []
-        for entry in d_study.get("custom", []):
-            rows.append({"Layers (p)": entry["p"], "Ansatz": "Custom MA-QAOA",
-                         "Raw Depth": entry["raw_depth"], "HW Depth": entry["hw_depth"],
-                         "2Q Gates": entry["2q_gates"],
-                         "Approx Ratio": f"{entry['approx_ratio']:.3f}",
-                         "P(top 1%)": f"{entry['prob_top1']:.1%}"})
-        for entry in d_study.get("standard", []):
-            rows.append({"Layers (p)": entry["p"], "Ansatz": "Standard QAOA",
-                         "Raw Depth": entry["raw_depth"], "HW Depth": entry["hw_depth"],
-                         "2Q Gates": entry["2q_gates"],
-                         "Approx Ratio": f"{entry['approx_ratio']:.3f}",
-                         "P(top 1%)": f"{entry['prob_top1']:.1%}"})
-        if rows:
-            st.markdown('<div class="section-header">Depth Study Metrics</div>',
-                        unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-    except Exception:
-        pass
-
-    if st.button("▶  Run Tradeoff Studies Now", key="run_tradeoff"):
-        with st.spinner("Running depth & shot studies — takes ~2–4 min …"):
-            proc = subprocess.run([sys.executable, os.path.join(APP_DIR, "tradeoff.py")],
-                                  capture_output=True, text=True, cwd=APP_DIR)
-        if proc.returncode == 0:
-            st.success("✅ Tradeoff studies complete. Charts updated.")
-        st.code(proc.stdout or proc.stderr, language="text")
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 6 — LIVE SIMULATION
-# ════════════════════════════════════════════════════════════════════════════
-with tab_sim:
-    st.markdown('<div class="section-header">Live Demand Simulation (Warm-Started QAOA)</div>',
-                unsafe_allow_html=True)
-    st.caption("Each tick adds +2% demand and re-solves with warm-started QAOA. "
-               "Demonstrates near-real-time adaptive scheduling.")
-
-    col_ctl, col_chart = st.columns([1, 3])
-    with col_ctl:
-        if st.button("▶  Start", type="primary", key="sim_start"):
-            st.session_state.sim_running = True
-            st.session_state.sim_tick    = 0
-            st.session_state.sim_results = []
-        if st.button("⏹  Stop", key="sim_stop"):
-            st.session_state.sim_running = False
-
-        if st.session_state.sim_results:
-            last = st.session_state.sim_results[-1]
-            st.markdown(f"""
-            <div class="kpi-card" style="margin-top:12px;">
-              <div class="kpi-label">Current Tick</div>
-              <div class="kpi-value">{last['tick']} / 10</div>
-            </div>
-            <div class="kpi-card" style="margin-top:8px;">
-              <div class="kpi-label">Demand Scale</div>
-              <div class="kpi-value">{last['demand_scale']:.2f}×</div>
-            </div>
-            <div class="kpi-card" style="margin-top:8px;">
-              <div class="kpi-label">Cost</div>
-              <div class="kpi-value">₹{last['cost_lakh']:.1f} L</div>
-            </div>""", unsafe_allow_html=True)
-
-    with col_chart:
-        if st.session_state.sim_results:
-            df_sim = pd.DataFrame(st.session_state.sim_results)
-            fig_sim, ax_sim = dark_fig(8, 3.5)
-            ax_sim.plot(df_sim["tick"], df_sim["cost_lakh"], color=BLUE,
-                        lw=2, marker="o", markersize=5, label="Cost (Rs Lakh)")
-            ax_sim.fill_between(df_sim["tick"], df_sim["cost_lakh"],
-                                alpha=0.1, color=BLUE)
-            ax_sim2 = ax_sim.twinx()
-            ax_sim2.plot(df_sim["tick"], df_sim["demand_scale"], color=AMBER,
-                         lw=1.5, ls="--", label="Demand scale", alpha=0.7)
-            ax_sim2.set_ylabel("Demand Scale", color=AMBER, fontsize=8)
-            ax_sim2.tick_params(colors=AMBER, labelsize=8)
-            ax_sim.set_xlabel("Simulation Tick", color=FG, fontsize=8)
-            ax_sim.set_ylabel("Cost (Rs Lakh)", color=BLUE, fontsize=8)
-            ax_sim.set_title("Adaptive QAOA Cost Under Rising Demand", color=FG,
-                             fontsize=9, pad=8)
-            fig_sim.tight_layout(pad=0.5)
-            st.pyplot(fig_sim, width='stretch')
-            st.dataframe(df_sim, width='stretch', hide_index=True)
-        else:
-            st.info("Press ▶ Start to begin the live simulation.")
-
-    if st.session_state.sim_running and st.session_state.sim_tick < 10:
-        tick = st.session_state.sim_tick
-        d_s  = 1.0 + tick * 0.02
-        with st.spinner(f"Tick {tick+1}/10 — demand scale = {d_s:.2f} …"):
-            r_sim = run_all(demand_scale=d_s, warm_theta=st.session_state.theta,
-                            restarts=1, maxiter=60)
-            st.session_state.theta = r_sim["theta"]
-            st.session_state.sim_results.append({
-                "tick":         tick + 1,
-                "demand_scale": round(d_s, 2),
-                "cost_lakh":    round(r_sim["lp_qaoa"]["cost"] / 1e5, 1),
-                "unserved_mwh": round(r_sim["lp_qaoa"]["unserved_mwh"], 1),
-            })
-        st.session_state.sim_tick += 1
-        st.rerun()
+    IBM_ENC  = os.path.join(APP_DIR,"ibm_results.enc.json")
+    PQC_KEYS = os.path.join(APP_DIR,"pqc_keys.bin")
+    st.markdown('<div class="section-header">Encrypted File Status</div>',unsafe_allow_html=True)
+    for fname,lbl_f in [(IBM_ENC,"IBM Hardware Results (enc)"),(PQC_KEYS,"PQC Key Material")]:
+        ex=os.path.exists(fname)
+        sz=os.path.getsize(fname) if ex else 0
+        cls="pill-on" if ex else "pill-off"
+        txt=f"Present ({sz:,} bytes)" if ex else "Not found -- generated after first IBM run"
+        st.markdown(
+            f'<div style="background:#0d1117;border:1px solid #1e2a38;border-radius:8px;'
+            f'padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+            f'<span style="color:#c9d1d9;font-size:0.82rem;font-family:JetBrains Mono,monospace;">'
+            f'{os.path.basename(fname)}</span>'
+            f'<span style="color:#8b949e;font-size:0.75rem;margin:0 12px;">{lbl_f}</span>'
+            f'<span class="pill {cls}">{txt}</span></div>',
+            unsafe_allow_html=True)

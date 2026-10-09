@@ -1,0 +1,23 @@
+# Secrets — never commit real tokens
+.streamlit/secrets.toml
+.env
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local run artifacts (optional — keep sample results if you want)
+# ibm_results.json
+# ibm_job_state.json
+# ibm_results.enc.json
