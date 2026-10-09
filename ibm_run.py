@@ -389,7 +389,7 @@ def main():
     ps.add_argument("--restarts", type=int, default=3, help="Optimizer restarts")
     ps.add_argument("--maxiter", type=int, default=120, help="Optimizer max iterations")
     ps.add_argument("--demand-scale", type=float, default=1.0, dest="demand_scale",
-                    help="Demand multiplier (1.0 = nominal, 1.15 = +15%)")
+                    help="Demand multiplier (1.0 = nominal, 1.15 = +15 percent)")
     ps.add_argument("--solar-scale",  type=float, default=1.0, dest="solar_scale",
                     help="Solar output multiplier (1.0 = forecast)")
     ps.add_argument("--wind-scale",   type=float, default=1.0, dest="wind_scale",

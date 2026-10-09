@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AP Grid Quantum Optimiser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0c10;
+      --panel: #0d1117;
+      --border: #1e2a38;
+      --text: #e2e8f0;
+      --muted: #8b949e;
+      --blue: #58a6ff;
+      --green: #3fb950;
+      --amber: #d29922;
+      --red: #f85149;
+      --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
+
+    /* Banner */
+    .banner {
+      background: linear-gradient(135deg, #0d1117 0%, #161b22 60%, #0d1b2a 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 30px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 22px;
+    }
+    .banner h1 {
+      font-size: 1.55rem;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .banner p { color: var(--muted); font-size: 0.85rem; margin-top: 6px; }
+    .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+    .badge {
+      display: inline-block;
+      background: #1c2a3a;
+      border: 1px solid #21364d;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--blue);
+    }
+    .badge-green { color: var(--green); border-color: #1a3624; background: #0f2419; }
+    .badge-amber { color: var(--amber); border-color: #3a2b12; background: #1c1808; }
+
+    .note {
+      background: #1c2a3a;
+      border-left: 3px solid var(--blue);
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-size: 0.88rem;
+      color: #c9d1d9;
+      margin-bottom: 22px;
+    }
+    .note strong { color: var(--text); }
+
+    /* KPI cards */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .kpi {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .kpi-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .kpi-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: #f0f6fc;
+    }
+    .kpi-sub { font-size: 0.75rem; margin-top: 5px; color: var(--muted); }
+    .kpi-sub.pos { color: var(--green); }
+    .kpi-sub.neu { color: var(--muted); }
+
+    .section {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 7px;
+      margin: 28px 0 16px;
+    }
+
+    /* Tables */
+    table.grid {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      font-size: 0.88rem;
+      margin-bottom: 18px;
+    }
+    table.grid th {
+      background: #111820;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    table.grid td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #161b22;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+    }
+    table.grid tr:last-child td { border-bottom: none; }
+    table.grid tr:hover td { background: #111820; }
+
+    .pill {
+      display: inline-block;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .pill-on  { background: #1a3624; color: var(--green); border: 1px solid #196c2e; }
+    .pill-off { background: #1c0e0e; color: var(--red); border: 1px solid #3b1b1b; }
+
+    /* Images */
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .card img {
+      width: 100%;
+      display: block;
+      background: #010409;
+    }
+    .card .cap {
+      padding: 10px 14px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 720px) {
+      .two-col { grid-template-columns: 1fr; }
+    }
+
+    footer {
+      margin-top: 40px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.8rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: space-between;
+    }
+
+    .btn {
+      display: inline-block;
+      background: #1c2a3a;
+      border: 1px solid #1f3a57;
+      color: var(--blue);
+      border-radius: 7px;
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-right: 8px;
+      margin-top: 8px;
+    }
+    .btn:hover { background: #21364d; text-decoration: none; }
+    .btn-primary {
+      background: #1c4a8a;
+      border-color: #388bfd;
+      color: #cae8ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="banner">
+      <div>
+        <h1>⚡ AP Grid Quantum Optimiser</h1>
+        <p>Hybrid QAOA · Unit Commitment · Post-Quantum Cryptography · IBM Quantum</p>
+      </div>
+      <div class="badges">
+        <span class="badge">Qiskit 2.5</span>
+        <span class="badge badge-green">NIST ML-KEM-768</span>
+        <span class="badge badge-amber">ibm_marrakesh · 156Q</span>
+        <span class="badge">Fall Fest 2026 — Use Case 04</span>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Static GitHub Pages view.</strong>
+      This page shows verified hardware results and figures.
+      The live interactive dashboard (demand sliders, real-time optimise, IBM submit)
+      runs on <strong>Streamlit</strong> — link it below after deploy.
+      GitHub Pages cannot execute Python / Streamlit backends.
+    </div>
+
+    <div class="section">IBM Hardware Results (ibm_marrakesh)</div>
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="kpi-label">Hardware Cost</div>
+        <div class="kpi-value">₹352.7 L</div>
+        <div class="kpi-sub neu">IBM ibm_marrakesh</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Ideal Aer Cost</div>
+        <div class="kpi-value">₹352.7 L</div>
+        <div class="kpi-sub neu">Noiseless reference</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Classical MILP</div>
+        <div class="kpi-value">₹352.7 L</div>
+        <div class="kpi-sub neu">Exact benchmark</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Optimality Gap</div>
+        <div class="kpi-value">0.00%</div>
+        <div class="kpi-sub pos">100% parity with MILP</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">P(top 1% states)</div>
+        <div class="kpi-value">22%</div>
+        <div class="kpi-sub pos">~22× over random</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">CO₂ Emissions</div>
+        <div class="kpi-value">6,580 t</div>
+        <div class="kpi-sub neu">0 MWh unserved</div>
+      </div>
+    </div>
+
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px;">
+      Job ID: <code style="color:var(--blue)">db3s9rimb58s7388alng</code>
+      · Shots: 4096 · Runtime: 17.7 s
+      · <a href="https://quantum.cloud.ibm.com/jobs/db3s9rimb58s7388alng" target="_blank" rel="noopener">View on IBM Quantum Platform ↗</a>
+    </p>
+
+    <div class="section">Hardware Unit Commitment Schedule</div>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Generator</th>
+          <th>00–06</th>
+          <th>06–12</th>
+          <th>12–18</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Coal-1</b></td>
+          <td><span class="pill pill-on">ON</span></td>
+          <td><span class="pill pill-on">ON</span></td>
+          <td><span class="pill pill-on">ON</span></td>
+        </tr>
+        <tr>
+          <td><b>Gas</b></td>
+          <td><span class="pill pill-off">off</span></td>
+          <td><span class="pill pill-on">ON</span></td>
+          <td><span class="pill pill-on">ON</span></td>
+        </tr>
+        <tr>
+          <td><b>Hydro</b></td>
+          <td><span class="pill pill-on">ON</span></td>
+          <td><span class="pill pill-on">ON</span></td>
+          <td><span class="pill pill-on">ON</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="section">Method Comparison</div>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Daily Cost</th>
+          <th>CO₂ (t)</th>
+          <th>Curtailed</th>
+          <th>Unserved</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>IBM Hardware QAOA</td>
+          <td>₹352.71 L</td>
+          <td>6,580</td>
+          <td>0 MWh</td>
+          <td>0 MWh</td>
+          <td>ibm_marrakesh, 9 qubits</td>
+        </tr>
+        <tr>
+          <td>Ideal Aer (noiseless)</td>
+          <td>₹352.71 L</td>
+          <td>6,580</td>
+          <td>0 MWh</td>
+          <td>0 MWh</td>
+          <td>Reference sampler</td>
+        </tr>
+        <tr>
+          <td>Classical MILP</td>
+          <td>₹352.71 L</td>
+          <td>6,580</td>
+          <td>0 MWh</td>
+          <td>0 MWh</td>
+          <td>Exact baseline</td>
+        </tr>
+        <tr>
+          <td>Uniform random</td>
+          <td>₹2,140 L</td>
+          <td>14,200</td>
+          <td>840 MWh</td>
+          <td>1,260 MWh</td>
+          <td>+507% cost</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="section">5-Node AP Transmission Network</div>
+    <div class="gallery">
+      <div class="card">
+        <img src="assets/network.png" alt="AP 5-bus network topology" />
+        <div class="cap">Andhra Pradesh 5-bus grid topology &amp; line flows</div>
+      </div>
+      <div class="card">
+        <img src="assets/results.png" alt="Multi-solver benchmark" />
+        <div class="cap">Multi-solver cost parity — QAOA matches MILP</div>
+      </div>
+    </div>
+
+    <div class="section">IBM Quantum Platform Evidence</div>
+    <div class="gallery">
+      <div class="card">
+        <img src="assets/ibm_workloads_dashboard.png" alt="IBM workloads dashboard" />
+        <div class="cap">IBM Quantum workloads dashboard</div>
+      </div>
+      <div class="card">
+        <img src="assets/ibm_marrakesh_job_histogram.png" alt="Measurement histogram" />
+        <div class="cap">ibm_marrakesh measurement histogram</div>
+      </div>
+      <div class="card">
+        <img src="assets/ibm_fez_circuit_diagram.png" alt="Circuit diagram" />
+        <div class="cap">Transpiled QAOA circuit (native CZ / SX / RZ)</div>
+      </div>
+      <div class="card">
+        <img src="assets/powershell_hardware_execution.png" alt="PowerShell execution" />
+        <div class="cap">CLI hardware execution log</div>
+      </div>
+    </div>
+
+    <div class="section">Quantum Rigor — Depth &amp; Shot Studies</div>
+    <div class="two-col">
+      <div class="card">
+        <img src="assets/depth_tradeoff.png" alt="Depth vs accuracy" />
+        <div class="cap">Circuit depth (p) vs approximation ratio</div>
+      </div>
+      <div class="card">
+        <img src="assets/shot_budget.png" alt="Shot budget" />
+        <div class="cap">Shot budget vs convergence</div>
+      </div>
+    </div>
+
+    <div class="section">Architecture</div>
+    <table class="grid">
+      <thead>
+        <tr><th>Module</th><th>Role</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>app.py</td><td>Streamlit control-room dashboard</td></tr>
+        <tr><td>qaoa.py</td><td>Custom Multi-Angle QAOA ansatz + optimisers</td></tr>
+        <tr><td>grid.py</td><td>QUBO formulation + classical MILP</td></tr>
+        <tr><td>network.py</td><td>5-bus DC power flow / LP dispatch</td></tr>
+        <tr><td>ibm_run.py / hardware.py</td><td>IBM Quantum submit &amp; fetch</td></tr>
+        <tr><td>mitigation.py</td><td>M3 readout error mitigation</td></tr>
+        <tr><td>pqc.py</td><td>NIST ML-KEM-768 + ML-DSA-65 + AES-GCM</td></tr>
+      </tbody>
+    </table>
+
+    <div class="section">Links</div>
+    <a class="btn btn-primary" href="https://share.streamlit.io/" target="_blank" rel="noopener">Live Streamlit App</a>
+    <a class="btn" href="https://quantum.cloud.ibm.com/jobs/db3s9rimb58s7388alng" target="_blank" rel="noopener">IBM Job</a>
+    <a class="btn" href="https://github.com/" target="_blank" rel="noopener">Source on GitHub</a>
+
+    <footer>
+      <span>Qiskit Fall Fest 2026 · Use Case 04 — Energy &amp; Utilities Day-Ahead Unit Commitment</span>
+      <span>Apache License 2.0</span>
+    </footer>
+  </div>
+</body>
+</html>

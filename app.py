@@ -439,11 +439,26 @@ with st.sidebar:
     run_on_ibm = st.checkbox(
         "Run on IBM Quantum hardware",
         value=False,
-        help="Trains QAOA locally, then samples on a real IBM QPU using the API key in ibm_run.py. "
+        help="Trains QAOA locally, then samples on a real IBM QPU. "
              "Job appears on the IBM Quantum platform; results load back into this dashboard.",
     )
+    ibm_backend_choice = "least-busy"
     if run_on_ibm:
         st.caption("⚡ Real QPU — queue + run may take several minutes. Uncheck for fast local Aer.")
+        ibm_backend_choice = st.selectbox(
+            "IBM backend",
+            [
+                "least-busy",
+                "ibm_fez",
+                "ibm_marrakesh",
+                "ibm_kingston",
+                "ibm_brisbane",
+                "ibm_sherbrooke",
+                "ibm_torino",
+            ],
+            index=0,
+            help="Pick a specific QPU (fez / marrakesh / kingston …) or least-busy to auto-select.",
+        )
 
     st.markdown('<div class="section-header">Run</div>', unsafe_allow_html=True)
     run_btn = st.button("▶  Optimise Now", type="primary", use_container_width=True)
@@ -480,6 +495,8 @@ if run_btn:
                 "--solar-scale", str(s_scale),
                 "--wind-scale", str(w_scale),
             ]
+            if ibm_backend_choice and ibm_backend_choice != "least-busy":
+                cmd += ["--backend", ibm_backend_choice]
             # Pass token into child process (st.secrets is not visible to subprocess)
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, cwd=APP_DIR,
@@ -847,7 +864,12 @@ with tab_ibm:
         if not fake_mode:
             st.caption("⚠️ Real IBM: Submit only queues the job. After it finishes on the platform, use **Fetch**.")
         ibm_shots   = st.select_slider("Shots", [1024, 2048, 4096, 8192, 16384], value=4096, key="ibm_shots")
-        ibm_backend = st.text_input("Backend (blank = least-busy)", "", key="ibm_bk")
+        ibm_backend = st.selectbox(
+            "Backend",
+            ["least-busy", "ibm_fez", "ibm_marrakesh", "ibm_kingston",
+             "ibm_brisbane", "ibm_sherbrooke", "ibm_torino"],
+            index=0, key="ibm_bk",
+        )
         ibm_opt     = st.selectbox("Optimizer", ["COBYLA", "SPSA", "PARAM_SHIFT"], key="ibm_opt")
         ibm_reps    = st.slider("QAOA layers (p)", 1, 4, 2, key="ibm_reps")
 
@@ -858,8 +880,8 @@ with tab_ibm:
                        "--reps", str(ibm_reps)]
                 if fake_mode:
                     cmd.append("--fake")
-                if ibm_backend.strip():
-                    cmd += ["--backend", ibm_backend.strip()]
+                if ibm_backend and ibm_backend != "least-busy":
+                    cmd += ["--backend", ibm_backend]
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, cwd=APP_DIR,
                     env=env_with_ibm_token(),
