@@ -6,3 +6,4 @@ scipy
 qiskit
 qiskit-aer
 qiskit-ibm-runtime
+pyarrow<25

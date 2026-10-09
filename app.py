@@ -461,7 +461,7 @@ with st.sidebar:
         )
 
     st.markdown('<div class="section-header">Run</div>', unsafe_allow_html=True)
-    run_btn = st.button("▶  Optimise Now", type="primary", use_container_width=True)
+    run_btn = st.button("▶  Optimise Now", type="primary", width='stretch')
 
     st.divider()
     st.caption("AP Grid Optimiser · Qiskit Fall Fest 2026")
@@ -703,7 +703,7 @@ with tab_opt:
         ax_s.tick_params(colors=FG, length=0)
         for sp in ax_s.spines.values(): sp.set_visible(False)
         fig_s.tight_layout(pad=0.5)
-        st.pyplot(fig_s, use_container_width=True)
+        st.pyplot(fig_s, width='stretch')
 
     with col_r:
         st.markdown('<div class="section-header">QAOA Training Convergence</div>',
@@ -719,7 +719,7 @@ with tab_opt:
             ax_t.set_ylabel("Normalised ⟨E⟩\n(0=optimal, 1=random)", color=FG, fontsize=8)
             ax_t.legend(fontsize=7, facecolor=BG, edgecolor=GRID_COL, labelcolor=FG)
         fig_t.tight_layout(pad=0.5)
-        st.pyplot(fig_t, use_container_width=True)
+        st.pyplot(fig_t, width='stretch')
 
     # ── Supply vs Demand Bar Chart ──────────────────────────────────────────
     st.markdown('<div class="section-header">Supply vs Demand by Block (MW)</div>',
@@ -739,7 +739,7 @@ with tab_opt:
         ax_d.set_ylabel("MW", color=FG, fontsize=8)
         ax_d.legend(fontsize=7.5, facecolor=BG, edgecolor=GRID_COL, labelcolor=FG)
         fig_d.tight_layout(pad=0.5)
-        st.pyplot(fig_d, use_container_width=True)
+        st.pyplot(fig_d, width='stretch')
 
     st.info("ℹ️  At 9–16 qubits, classical solvers are instant. "
             "This is a hardware-ready hybrid pipeline validated against exact MILP baselines. "
@@ -757,7 +757,7 @@ with tab_net:
         col_map, col_info = st.columns([2, 1])
         with col_map:
             fig_net = draw_network(st.session_state.result)
-            st.pyplot(fig_net, use_container_width=True)
+            st.pyplot(fig_net, width='stretch')
             st.caption("Line colour: 🟢 <60%  🟡 60–85%  🔴 >85% loaded")
 
         with col_info:
@@ -802,7 +802,7 @@ with tab_net:
                     "Loading (%)": round(bl["line_loading_pct"][l], 1),
                 })
         if rows_flow:
-            st.dataframe(pd.DataFrame(rows_flow), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows_flow), width='stretch', hide_index=True)
     else:
         st.info("Run optimisation first (click ▶ Optimise Now in sidebar).")
 
@@ -1144,13 +1144,13 @@ with tab_rigor:
     with col_g1:
         st.markdown("**Circuit Depth (p) vs Accuracy**")
         try:
-            st.image(os.path.join(APP_DIR, "depth_tradeoff.png"), use_container_width=True)
+            st.image(os.path.join(APP_DIR, "depth_tradeoff.png"), width='stretch')
         except Exception:
             st.warning("Run `python tradeoff.py` to generate this chart.")
     with col_g2:
         st.markdown("**Shot Budget vs Precision**")
         try:
-            st.image(os.path.join(APP_DIR, "shot_budget.png"), use_container_width=True)
+            st.image(os.path.join(APP_DIR, "shot_budget.png"), width='stretch')
         except Exception:
             st.warning("Run `python tradeoff.py` to generate this chart.")
 
@@ -1175,7 +1175,7 @@ with tab_rigor:
         if rows:
             st.markdown('<div class="section-header">Depth Study Metrics</div>',
                         unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
     except Exception:
         pass
 
@@ -1240,8 +1240,8 @@ with tab_sim:
             ax_sim.set_title("Adaptive QAOA Cost Under Rising Demand", color=FG,
                              fontsize=9, pad=8)
             fig_sim.tight_layout(pad=0.5)
-            st.pyplot(fig_sim, use_container_width=True)
-            st.dataframe(df_sim, use_container_width=True, hide_index=True)
+            st.pyplot(fig_sim, width='stretch')
+            st.dataframe(df_sim, width='stretch', hide_index=True)
         else:
             st.info("Press ▶ Start to begin the live simulation.")
 
