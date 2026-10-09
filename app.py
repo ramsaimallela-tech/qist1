@@ -505,19 +505,43 @@ if run_btn:
         out_text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         st.code(out_text or "(no output)", language="text")
 
-        if proc.returncode != 0:
-            st.error(
-                f"IBM submit failed (exit {proc.returncode}). "
-                "Check the log above. Most common cause: missing IBM_QUANTUM_TOKEN in Streamlit Secrets."
+        # Recover job_id from log / state (job may finish on IBM even if Cloud kills the wait)
+        import re as _re
+        _jid = ""
+        m = _re.search(r"Job ID\s*:\s*([A-Za-z0-9_-]+)", out_text or "")
+        if m:
+            _jid = m.group(1)
+        if not _jid and os.path.exists(IBM_STATE):
+            try:
+                with open(IBM_STATE) as _sf:
+                    _jid = json.load(_sf).get("job_id", "") or ""
+            except Exception:
+                pass
+        if _jid:
+            st.session_state["fetch_jid"] = _jid
+            st.info(f"IBM Job ID: `{_jid}` — [open on platform](https://quantum.cloud.ibm.com/jobs/{_jid})")
+
+        # Auto-fetch when results file is missing but job id is known
+        if not os.path.exists(IBM_RESULTS) and _jid and "local" not in str(_jid).lower():
+            st.warning(
+                "Results not saved yet (common when Streamlit Cloud times out while waiting). "
+                f"Fetching completed job `{_jid}` from IBM…"
             )
-        elif os.path.exists(IBM_RESULTS):
-            st.success("✅ IBM Quantum job finished. Results loaded into the dashboard.")
+            with st.spinner(f"Fetching {_jid} …"):
+                fproc = subprocess.run(
+                    [sys.executable, os.path.join(APP_DIR, "ibm_run.py"), "fetch", _jid],
+                    capture_output=True, text=True, cwd=APP_DIR,
+                    env=env_with_ibm_token(),
+                )
+            st.code((fproc.stdout or "") + ("\n" + (fproc.stderr or "")), language="text")
+
+        if os.path.exists(IBM_RESULTS):
+            st.success("✅ IBM Quantum results loaded into the dashboard.")
             try:
                 with open(IBM_RESULTS) as f:
                     st.session_state.ibm_data = json.load(f)
             except Exception:
                 st.session_state.ibm_data = None
-            # Also run local full pipeline so Optimise / Network tabs have rich data
             try:
                 with st.spinner("Building local LP/MILP benchmarks for the same scenario…"):
                     r = run_all(
@@ -531,8 +555,18 @@ if run_btn:
                 st.warning("IBM results saved, but local benchmark step failed:")
                 st.exception(e)
             st.rerun()
+        elif _jid:
+            st.warning(
+                f"Job `{_jid}` is on IBM but results are not in the app yet. "
+                "Open the **IBM Quantum** tab → Job ID is pre-filled → click **⬇ Fetch from IBM**."
+            )
+        elif proc.returncode != 0:
+            st.error(
+                f"IBM submit failed (exit {proc.returncode}). "
+                "Check the log above / IBM_QUANTUM_TOKEN in Streamlit Secrets."
+            )
         else:
-            st.warning("IBM run finished but ibm_results.json was not created. See log above.")
+            st.warning("IBM run finished but no results file and no Job ID found. See log above.")
     else:
         # ── Fast local Aer / classical path ────────────────────────────────
         target_csv = None

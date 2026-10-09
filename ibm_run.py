@@ -147,6 +147,13 @@ def cmd_submit(args):
         print(f"\n      >> View on IBM Quantum Platform:")
         print(f"         https://quantum.cloud.ibm.com/jobs/{job_id}")
         print(f"\n      Waiting for results ...")
+    # Save job_id + theta immediately so the dashboard can Fetch even if
+    # this process is killed while waiting on the IBM queue.
+    try:
+        _save_state(job_id, theta.tolist(), label, args.fake)
+        print(f"      State saved -> {STATE_FILE} (use: python ibm_run.py fetch {job_id})")
+    except Exception as _se:
+        print(f"      WARN could not save state early: {_se}")
 
     result  = job.result()
     t_run   = time.time() - t_submit
