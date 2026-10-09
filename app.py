@@ -289,7 +289,9 @@ hr { border-color: #1e2a38 !important; }
 # ─────────────────────────────────────────────────────────────────────────────
 for key, val in [("theta", None), ("result", None), ("sim_running", False),
                  ("sim_tick", 0), ("sim_results", []),
-                 ("ibm_file_mtime", 0.0), ("ibm_data", None)]:
+                 ("ibm_file_mtime", 0.0), ("ibm_data", None),
+                 ("ibm_live", False), ("result_live", False),
+                 ("result_meta", None)]:
     if key not in st.session_state:
         st.session_state[key] = val
 
@@ -540,8 +542,10 @@ if run_btn:
             try:
                 with open(IBM_RESULTS) as f:
                     st.session_state.ibm_data = json.load(f)
+                st.session_state.ibm_live = True
             except Exception:
                 st.session_state.ibm_data = None
+                st.session_state.ibm_live = False
             try:
                 with st.spinner("Building local LP/MILP benchmarks for the same scenario…"):
                     r = run_all(
@@ -551,6 +555,14 @@ if run_btn:
                     )
                 st.session_state.theta  = r["theta"]
                 st.session_state.result = r
+                st.session_state.result_live = True
+                st.session_state.result_meta = {
+                    "demand_scale": round(d_scale, 3),
+                    "solar_scale": round(s_scale, 3),
+                    "wind_scale": round(w_scale, 3),
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": "ibm",
+                }
             except Exception as e:
                 st.warning("IBM results saved, but local benchmark step failed:")
                 st.exception(e)
@@ -599,6 +611,15 @@ if run_btn:
                 )
             st.session_state.theta  = r["theta"]
             st.session_state.result = r
+            st.session_state.result_live = True
+            st.session_state.ibm_live = False
+            st.session_state.result_meta = {
+                "demand_scale": round(d_scale, 3),
+                "solar_scale": round(s_scale, 3),
+                "wind_scale": round(w_scale, 3),
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "source": "local",
+            }
         except Exception as e:
             st.error("Optimisation failed. Full error below — copy this and share if you need help.")
             st.exception(e)
@@ -618,21 +639,14 @@ tab_opt, tab_net, tab_ibm, tab_pqc, tab_rigor, tab_sim = st.tabs([
 # TAB 1 — OPTIMISE
 # ════════════════════════════════════════════════════════════════════════════
 with tab_opt:
-  # Show latest IBM hardware results banner if available
+  # IBM banner: LIVE only after this session's submit/fetch — never pretends cached file is live
   _ibm = st.session_state.get("ibm_data")
-  if _ibm is None and os.path.exists(IBM_RESULTS):
-      try:
-          with open(IBM_RESULTS) as _f:
-              _ibm = json.load(_f)
-              st.session_state.ibm_data = _ibm
-      except Exception:
-          pass
-  if _ibm:
+  if st.session_state.get("ibm_live") and _ibm:
       _hw = _ibm.get("hardware", {})
       _url = _ibm.get("ibm_platform_url", "")
       st.markdown(f"""
       <div style="background:#0f2419;border:1px solid #196c2e;border-radius:10px;padding:12px 18px;margin-bottom:14px;">
-        <span class="badge badge-green">IBM HARDWARE</span>
+        <span class="badge badge-green">LIVE IBM HARDWARE</span>
         <span style="color:#c9d1d9;font-size:0.85rem;margin-left:8px;">
           Backend <b>{_ibm.get('backend','—')}</b> · Job <code>{_ibm.get('job_id','—')}</code> ·
           Cost ₹{_hw.get('cost_lakh',0):.1f}L · P(top1%) {_hw.get('prob_in_top1pct',0):.0%}
@@ -640,13 +654,26 @@ with tab_opt:
         {"<a href='" + _url + "' target='_blank' style='color:#58a6ff;margin-left:10px;'>Open on IBM Platform ↗</a>" if _url else ""}
       </div>
       """, unsafe_allow_html=True)
+  elif os.path.exists(IBM_RESULTS):
+      st.caption(
+          "📦 A sample/cached `ibm_results.json` exists in the repo from an earlier job. "
+          "It is **not** live. Check **Run on IBM Quantum hardware** + Optimise, or **Fetch** a Job ID on the IBM tab."
+      )
 
   if r is None:
     st.info("👈 Set demand / solar / wind in the sidebar, then click **▶ Optimise Now**.\n\n"
-            "• **Local (default):** ~15–40 s Aer simulation + MILP\n\n"
-            "• **IBM Quantum:** check *Run on IBM Quantum hardware* — trains QAOA, submits circuit to a real QPU, "
-            "shows the job on the IBM platform, and loads results back here.")
+            "• **Local (default):** trains MA-QAOA + LP/MILP **now** with your slider values (not static images).\n\n"
+            "• **IBM Quantum:** check *Run on IBM Quantum hardware*, pick backend (fez/marrakesh/kingston), "
+            "then Optimise — submits a real circuit; use **Fetch** if Cloud times out while waiting.")
   else:
+    # Live-run stamp so it's obvious this is not a static screenshot
+    _meta = st.session_state.get("result_meta") or {}
+    _src = "LIVE IBM + local benchmarks" if st.session_state.get("ibm_live") else "LIVE local Aer / classical"
+    st.success(
+        f"**{_src}** · demand×{_meta.get('demand_scale', '?')} · "
+        f"solar×{_meta.get('solar_scale', '?')} · wind×{_meta.get('wind_scale', '?')} · "
+        f"{_meta.get('time', '')}"
+    )
     # ── KPI Row ────────────────────────────────────────────────────────────
     gap   = r["gap_pct"]
     g_cls = "kpi-pos" if abs(gap) < 0.5 else "kpi-neg"
@@ -977,14 +1004,23 @@ with tab_ibm:
             if proc.returncode != 0:
                 st.error(f"Fetch failed (exit code {proc.returncode}). Job may still be running — try again later.")
             elif os.path.exists(IBM_RESULTS):
-                st.success("✅ Results saved to `ibm_results.json`. Refreshing dashboard…")
+                try:
+                    with open(IBM_RESULTS) as f:
+                        st.session_state.ibm_data = json.load(f)
+                    st.session_state.ibm_live = True
+                except Exception:
+                    pass
+                st.success("✅ Live IBM results loaded into the dashboard.")
                 st.rerun()
             else:
                 st.warning("Fetch finished but `ibm_results.json` was not created. See log above.")
 
     # ── Last Saved IBM Results ──────────────────────────────────────────────
-    st.markdown('<div class="section-header">Last IBM Hardware Results</div>',
-                unsafe_allow_html=True)
+    _live_lbl = "LIVE (this session)" if st.session_state.get("ibm_live") else "file on disk (may be sample/cached)"
+    st.markdown(
+        f'<div class="section-header">IBM Hardware Results — {_live_lbl}</div>',
+        unsafe_allow_html=True,
+    )
     try:
         with open(IBM_RESULTS) as f:
             ibm_data = json.load(f)
@@ -1173,7 +1209,9 @@ with tab_rigor:
         - ZNE: Digital gate folding G→G(G†G)^k at λ∈{1.0, 2.0, 3.0}, extrapolate to λ→0
         """)
 
-    st.markdown('<div class="section-header">Tradeoff Studies</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Tradeoff Studies (static offline plots — not live IBM)</div>',
+                unsafe_allow_html=True)
+    st.caption("These PNGs are pre-generated analysis charts. Live optimise results are on the **Optimise** tab after you click the button.")
     col_g1, col_g2 = st.columns(2)
     with col_g1:
         st.markdown("**Circuit Depth (p) vs Accuracy**")
